@@ -37,6 +37,12 @@ async fn main() {
         .await
         .expect("Failed to connect to Postgres");
 
+    // Run database migrations automatically on startup
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run database migrations");
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -89,8 +95,10 @@ async fn main() {
         .layer(cors)
         .with_state(app_state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    tracing::info!("listening on {}", listener.local_addr().unwrap());
+    let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.expect("Failed to bind port");
+    tracing::info!("listening on {}", addr);
 
     axum::serve(listener, app).await.unwrap();
 }
