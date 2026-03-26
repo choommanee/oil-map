@@ -1,56 +1,916 @@
 use axum::{
-    extract::{Path, State},
-    Json,
+    extract::{Path, Query, State},
     http::StatusCode,
+    Json,
 };
-use sqlx::PgPool;
-use crate::models::{GasStation, FuelStatus, StationWithFuel};
+use chrono::Utc;
+use sqlx::Row;
+
+use crate::models::{
+    build_station_summaries, brand_key, ApiMessage, AppUser, AreaBreakdown, AuthResponse, AuthUser,
+    ChatMessage, ChatQuery, DistrictDetailResponse, DistrictSummary, FeedItem, FeedRow, FuelMixRow,
+    FuelMixSummary, InventoryCounts, LiveFeedResponse, LoginRequest, MapViewportResponse,
+    NearbySearchQuery, NearbySearchResponse, NearbyStationResult, OverviewQuery, OverviewResponse,
+    OverviewRow, OverviewTotals, PostChatMessage, ProvinceDetailResponse, ProvinceDistrictRow,
+    ProvinceRef, RegisterRequest, RouteAvailableResponse, RouteQuery, ScopeBreakdownRow, SearchRow,
+    StationFilterQuery, StationMapRow, StationSummary, StationUpdateRequest, ViewportQuery,
+    ZoneStationsQuery,
+};
+use crate::state::AppState;
+
+fn sanitize_scope(value: &Option<String>) -> Option<String> {
+    value
+        .as_ref()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+fn sanitize_limit(value: Option<i64>, default_value: i64, max_value: i64) -> i64 {
+    value.map(|item| item.max(1).min(max_value)).unwrap_or(default_value)
+}
+
+fn sanitize_float(value: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        0.0
+    }
+}
+
+fn build_station_filter_clause(filters: &StationFilterQuery) -> String {
+    let mut clauses = vec!["1=1".to_string()];
+
+    if let Some(region) = sanitize_scope(&filters.region) {
+        clauses.push(format!("r.name = '{}'", region.replace('\'', "''")));
+    }
+    if let Some(province_slug) = sanitize_scope(&filters.province_slug) {
+        clauses.push(format!("p.slug = '{}'", province_slug.replace('\'', "''")));
+    }
+    if let Some(district_slug) = sanitize_scope(&filters.district_slug) {
+        clauses.push(format!("d.slug = '{}'", district_slug.replace('\'', "''")));
+    }
+    if let Some(brand) = sanitize_scope(&filters.brand) {
+        clauses.push(format!("LOWER(s.brand) = LOWER('{}')", brand.replace('\'', "''")));
+    }
+    if let Some(status) = sanitize_scope(&filters.status) {
+        clauses.push(format!("LOWER(fs.inventory_level) = LOWER('{}')", status.replace('\'', "''")));
+    }
+    if let Some(fuel_type) = sanitize_scope(&filters.fuel_type) {
+        clauses.push(format!("LOWER(fs.fuel_type) = LOWER('{}')", fuel_type.replace('\'', "''")));
+    }
+    if let (Some(lat), Some(lng), Some(radius_km)) = (filters.lat, filters.lng, filters.radius_km) {
+        clauses.push(format!(
+            "(6371 * acos(LEAST(1, GREATEST(-1, cos(radians({lat})) * cos(radians(s.latitude)) * cos(radians(s.longitude) - radians({lng})) + sin(radians({lat})) * sin(radians(s.latitude)))))) <= {radius_km}"
+        ));
+    }
+
+    clauses.join(" AND ")
+}
+
+fn build_scope_clause(
+    region: &Option<String>,
+    province_slug: &Option<String>,
+    district_slug: &Option<String>,
+) -> String {
+    let mut clauses = vec!["1=1".to_string()];
+
+    if let Some(value) = sanitize_scope(region) {
+        clauses.push(format!("r.name = '{}'", value.replace('\'', "''")));
+    }
+    if let Some(value) = sanitize_scope(province_slug) {
+        clauses.push(format!("p.slug = '{}'", value.replace('\'', "''")));
+    }
+    if let Some(value) = sanitize_scope(district_slug) {
+        clauses.push(format!("d.slug = '{}'", value.replace('\'', "''")));
+    }
+
+    clauses.join(" AND ")
+}
+
+fn to_inventory_counts(row: &OverviewRow) -> InventoryCounts {
+    InventoryCounts {
+        high: row.high_count,
+        medium: row.medium_count,
+        low: row.low_count,
+        out: row.out_count,
+        refilling: row.refilling_count,
+    }
+}
+
+fn to_fuel_mix(rows: Vec<FuelMixRow>) -> Vec<FuelMixSummary> {
+    rows.into_iter()
+        .map(|row| FuelMixSummary {
+            fuel_type: row.fuel_type,
+            stations_with_fuel: row.stations_with_fuel,
+            inventory_counts: InventoryCounts {
+                high: row.high_count,
+                medium: row.medium_count,
+                low: row.low_count,
+                out: row.out_count,
+                refilling: row.refilling_count,
+            },
+            avg_price_per_liter: row.avg_price_per_liter.unwrap_or(0.0),
+        })
+        .collect()
+}
+
+fn build_map_response(
+    scope_type: String,
+    scope_name: String,
+    north: f64,
+    south: f64,
+    east: f64,
+    west: f64,
+    rows: Vec<NearbyStationResult>,
+) -> MapViewportResponse {
+    let total_stations = rows
+        .iter()
+        .map(|row| row.station_id)
+        .collect::<std::collections::HashSet<_>>()
+        .len() as i64;
+    let latest_update_at = rows.iter().map(|row| row.last_updated).max();
+    let total_price = rows.iter().map(|row| row.price_per_liter).sum::<f64>();
+    let count = rows.len() as f64;
+    let mut inventory_counts = InventoryCounts {
+        high: 0,
+        medium: 0,
+        low: 0,
+        out: 0,
+        refilling: 0,
+    };
+
+    for row in &rows {
+        match row.inventory_level.as_str() {
+            "high" => inventory_counts.high += 1,
+            "medium" => inventory_counts.medium += 1,
+            "low" => inventory_counts.low += 1,
+            "out" => inventory_counts.out += 1,
+            "refilling" => inventory_counts.refilling += 1,
+            _ => {}
+        }
+    }
+
+    MapViewportResponse {
+        scope_type,
+        scope_name,
+        north,
+        south,
+        east,
+        west,
+        generated_at: Utc::now(),
+        total_stations,
+        returned_stations: rows.len(),
+        nearby_stations: rows,
+        inventory_counts,
+        latest_update_at,
+        average_price_per_liter: if count > 0.0 { total_price / count } else { 0.0 },
+    }
+}
 
 pub async fn get_stations(
-    State(pool): State<PgPool>,
-) -> Result<Json<Vec<GasStation>>, (StatusCode, String)> {
-    let stations = sqlx::query_as::<_, GasStation>("SELECT * FROM gas_stations")
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    State(state): State<AppState>,
+    Query(filters): Query<StationFilterQuery>,
+) -> Result<Json<Vec<StationSummary>>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let clause = build_station_filter_clause(&filters);
+    let sql = format!(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} ORDER BY s.last_updated DESC, s.id ASC"
+    );
 
-    Ok(Json(stations))
+    let rows = sqlx::query_as::<_, StationMapRow>(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(build_station_summaries(rows)))
+}
+
+pub async fn get_map_data(
+    state: State<AppState>,
+    Query(filters): Query<StationFilterQuery>,
+) -> Result<Json<Vec<StationSummary>>, (StatusCode, Json<ApiMessage>)> {
+    get_stations(state, Query(filters)).await
+}
+
+pub async fn get_viewport_stations(
+    State(state): State<AppState>,
+    Query(query): Query<ViewportQuery>,
+) -> Result<Json<MapViewportResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let north = sanitize_float(query.north);
+    let south = sanitize_float(query.south);
+    let east = sanitize_float(query.east);
+    let west = sanitize_float(query.west);
+    let limit = sanitize_limit(query.limit, 60, 200);
+    let lat = (north + south) / 2.0;
+    let lng = (east + west) / 2.0;
+
+    let mut clauses = vec![
+        format!("s.latitude BETWEEN {south} AND {north}"),
+        format!("s.longitude BETWEEN {west} AND {east}"),
+    ];
+
+    if let Some(brand) = sanitize_scope(&query.brand) {
+        clauses.push(format!("LOWER(s.brand) = LOWER('{}')", brand.replace('\'', "''")));
+    }
+    if let Some(status) = sanitize_scope(&query.status) {
+        clauses.push(format!("LOWER(fs.inventory_level) = LOWER('{}')", status.replace('\'', "''")));
+    }
+    if let Some(fuel_type) = sanitize_scope(&query.fuel_type) {
+        clauses.push(format!("LOWER(fs.fuel_type) = LOWER('{}')", fuel_type.replace('\'', "''")));
+    }
+
+    let where_clause = clauses.join(" AND ");
+    let sql = format!(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter, (6371 * acos(LEAST(1, GREATEST(-1, cos(radians({lat})) * cos(radians(s.latitude)) * cos(radians(s.longitude) - radians({lng})) + sin(radians({lat})) * sin(radians(s.latitude)))))) AS distance_km FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {where_clause} ORDER BY distance_km ASC, s.last_updated DESC LIMIT {limit}"
+    );
+
+    let rows = sqlx::query_as::<_, SearchRow>(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+
+    let nearby_stations = rows.into_iter().map(search_row_to_result).collect::<Vec<_>>();
+    Ok(Json(build_map_response(
+        "viewport".to_string(),
+        format!("{north:.4},{south:.4},{east:.4},{west:.4}"),
+        north,
+        south,
+        east,
+        west,
+        nearby_stations,
+    )))
+}
+
+pub async fn get_zone_stations(
+    State(state): State<AppState>,
+    Query(query): Query<ZoneStationsQuery>,
+) -> Result<Json<MapViewportResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let region = sanitize_scope(&query.region);
+    let province_slug = sanitize_scope(&query.province_slug);
+    let district_slug = sanitize_scope(&query.district_slug);
+    let limit = sanitize_limit(query.limit, 60, 200);
+
+    let mut clauses = vec!["1=1".to_string()];
+    if let Some(region_value) = &region {
+        clauses.push(format!("r.name = '{}'", region_value.replace('\'', "''")));
+    }
+    if let Some(province_value) = &province_slug {
+        clauses.push(format!("p.slug = '{}'", province_value.replace('\'', "''")));
+    }
+    if let Some(district_value) = &district_slug {
+        clauses.push(format!("d.slug = '{}'", district_value.replace('\'', "''")));
+    }
+    if let Some(brand) = sanitize_scope(&query.brand) {
+        clauses.push(format!("LOWER(s.brand) = LOWER('{}')", brand.replace('\'', "''")));
+    }
+    if let Some(status) = sanitize_scope(&query.status) {
+        clauses.push(format!("LOWER(fs.inventory_level) = LOWER('{}')", status.replace('\'', "''")));
+    }
+    if let Some(fuel_type) = sanitize_scope(&query.fuel_type) {
+        clauses.push(format!("LOWER(fs.fuel_type) = LOWER('{}')", fuel_type.replace('\'', "''")));
+    }
+
+    let sql = format!(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter, 0.0::float8 AS distance_km FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {where_clause} ORDER BY s.last_updated DESC, s.id ASC LIMIT {limit}",
+        where_clause = clauses.join(" AND ")
+    );
+
+    let rows = sqlx::query_as::<_, SearchRow>(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+
+    let nearby_stations = rows.into_iter().map(search_row_to_result).collect::<Vec<_>>();
+    let scope_name = province_slug
+        .clone()
+        .or(region.clone())
+        .or(district_slug.clone())
+        .unwrap_or_else(|| "selected zone".to_string());
+
+    Ok(Json(build_map_response(
+        "zone".to_string(),
+        scope_name,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        nearby_stations,
+    )))
 }
 
 pub async fn get_station_detail(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(id): Path<i32>,
-) -> Result<Json<StationWithFuel>, (StatusCode, String)> {
-    let station = sqlx::query_as::<_, GasStation>("SELECT * FROM gas_stations WHERE id = $1")
-        .bind(id)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+) -> Result<Json<StationSummary>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let rows = sqlx::query_as::<_, StationMapRow>(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE s.id = $1 ORDER BY fs.last_updated DESC"
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await
+    .map_err(internal_error)?;
 
-    let fuels = sqlx::query_as::<_, FuelStatus>("SELECT * FROM fuel_status WHERE station_id = $1")
-        .bind(id)
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let station = build_station_summaries(rows)
+        .into_iter()
+        .next()
+        .ok_or_else(not_found_station)?;
 
-    Ok(Json(StationWithFuel { station, fuels }))
+    Ok(Json(station))
+}
+
+pub async fn get_province_detail(
+    State(state): State<AppState>,
+    Path(province_slug): Path<String>,
+) -> Result<Json<ProvinceDetailResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let district_rows = sqlx::query_as::<_, ProvinceDistrictRow>(
+        "SELECT p.id AS province_id, p.name AS province_name, p.slug AS province_slug, r.name AS region_name, d.id AS district_id, d.name AS district_name, d.slug AS district_slug, COUNT(s.id) AS district_station_count FROM provinces p JOIN regions r ON p.region_id = r.id JOIN districts d ON d.province_id = p.id LEFT JOIN stations s ON s.district_id = d.id WHERE p.slug = $1 GROUP BY p.id, p.name, p.slug, r.name, d.id, d.name, d.slug ORDER BY d.name ASC"
+    )
+    .bind(&province_slug)
+    .fetch_all(pool)
+    .await
+    .map_err(internal_error)?;
+
+    if district_rows.is_empty() {
+        return Err(not_found("province not found"));
+    }
+
+    let station_rows = sqlx::query_as::<_, StationMapRow>(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE p.slug = $1 ORDER BY s.name ASC, fs.fuel_type ASC"
+    )
+    .bind(&province_slug)
+    .fetch_all(pool)
+    .await
+    .map_err(internal_error)?;
+
+    let head = &district_rows[0];
+    let districts = district_rows
+        .iter()
+        .map(|row| DistrictSummary {
+            id: row.district_id,
+            name: row.district_name.clone(),
+            slug: row.district_slug.clone(),
+            station_count: row.district_station_count,
+        })
+        .collect::<Vec<_>>();
+    let stations = build_station_summaries(station_rows);
+
+    Ok(Json(ProvinceDetailResponse {
+        id: head.province_id,
+        name: head.province_name.clone(),
+        slug: head.province_slug.clone(),
+        region: head.region_name.clone(),
+        district_count: districts.len(),
+        station_count: stations.len(),
+        districts,
+        stations,
+    }))
+}
+
+pub async fn get_district_detail(
+    State(state): State<AppState>,
+    Path((province_slug, district_slug)): Path<(String, String)>,
+) -> Result<Json<DistrictDetailResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let district_meta = sqlx::query(
+        "SELECT p.name AS province_name, p.slug AS province_slug, r.name AS region_name, d.id AS district_id, d.name AS district_name, d.slug AS district_slug, COUNT(s.id) AS station_count FROM districts d JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id LEFT JOIN stations s ON s.district_id = d.id WHERE p.slug = $1 AND d.slug = $2 GROUP BY p.name, p.slug, r.name, d.id, d.name, d.slug"
+    )
+    .bind(&province_slug)
+    .bind(&district_slug)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal_error)?;
+
+    let district_meta = district_meta.ok_or_else(|| not_found("district not found"))?;
+
+    let station_rows = sqlx::query_as::<_, StationMapRow>(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE p.slug = $1 AND d.slug = $2 ORDER BY s.last_updated DESC"
+    )
+    .bind(&province_slug)
+    .bind(&district_slug)
+    .fetch_all(pool)
+    .await
+    .map_err(internal_error)?;
+
+    Ok(Json(DistrictDetailResponse {
+        province: ProvinceRef {
+            name: district_meta.get::<String, _>("province_name"),
+            slug: district_meta.get::<String, _>("province_slug"),
+            region: district_meta.get::<String, _>("region_name"),
+        },
+        district: DistrictSummary {
+            id: district_meta.get::<i32, _>("district_id"),
+            name: district_meta.get::<String, _>("district_name"),
+            slug: district_meta.get::<String, _>("district_slug"),
+            station_count: district_meta.get::<i64, _>("station_count"),
+        },
+        stations: build_station_summaries(station_rows),
+    }))
+}
+
+pub async fn get_overview(
+    State(state): State<AppState>,
+    Query(query): Query<OverviewQuery>,
+) -> Result<Json<OverviewResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let level = query.level.clone().unwrap_or_else(|| "national".to_string());
+    let clause = build_scope_clause(&query.region, &query.province_slug, &query.district_slug);
+
+    let totals_sql = format!(
+        "SELECT COUNT(DISTINCT s.id) AS stations_total, COUNT(DISTINCT p.id) AS provinces_total, COUNT(DISTINCT d.id) AS districts_total, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h, COUNT(*) FILTER (WHERE fs.inventory_level = 'high') AS high_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'medium') AS medium_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'low') AS low_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'out') AS out_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'refilling') AS refilling_count, AVG(fs.price_per_liter) AS avg_price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause}"
+    );
+
+    let totals = sqlx::query_as::<_, OverviewRow>(&totals_sql)
+        .fetch_one(pool)
+        .await
+        .map_err(internal_error)?;
+
+    let fuel_mix_sql = format!(
+        "SELECT fs.fuel_type, COUNT(DISTINCT fs.station_id) AS stations_with_fuel, COUNT(*) FILTER (WHERE fs.inventory_level = 'high') AS high_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'medium') AS medium_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'low') AS low_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'out') AS out_count, COUNT(*) FILTER (WHERE fs.inventory_level = 'refilling') AS refilling_count, AVG(fs.price_per_liter) AS avg_price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY fs.fuel_type ORDER BY fs.fuel_type ASC"
+    );
+
+    let fuel_mix_rows = sqlx::query_as::<_, FuelMixRow>(&fuel_mix_sql)
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+
+    let breakdown_sql = match level.as_str() {
+        "region" => format!(
+            "SELECT p.name AS area_name, p.slug AS area_slug, COUNT(DISTINCT s.id) AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY p.name, p.slug ORDER BY stations_count DESC, p.name ASC"
+        ),
+        "province" => format!(
+            "SELECT d.name AS area_name, d.slug AS area_slug, COUNT(DISTINCT s.id) AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY d.name, d.slug ORDER BY stations_count DESC, d.name ASC"
+        ),
+        "district" => format!(
+            "SELECT s.name AS area_name, CAST(s.id AS TEXT) AS area_slug, 1 AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY s.id, s.name ORDER BY updates_last_24h DESC, s.name ASC"
+        ),
+        _ => format!(
+            "SELECT r.name AS area_name, LOWER(REPLACE(r.name, ' ', '-')) AS area_slug, COUNT(DISTINCT s.id) AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY r.name ORDER BY stations_count DESC, r.name ASC"
+        ),
+    };
+
+    let breakdown_rows = sqlx::query_as::<_, ScopeBreakdownRow>(&breakdown_sql)
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+
+    let scope_name = match level.as_str() {
+        "district" => query.district_slug.clone().unwrap_or_else(|| "district".to_string()),
+        "province" => query.province_slug.clone().unwrap_or_else(|| "province".to_string()),
+        "region" => query.region.clone().unwrap_or_else(|| "region".to_string()),
+        _ => "Thailand".to_string(),
+    };
+
+    Ok(Json(OverviewResponse {
+        scope_level: level,
+        scope_name,
+        region: query.region.clone(),
+        province_slug: query.province_slug.clone(),
+        district_slug: query.district_slug.clone(),
+        generated_at: Utc::now(),
+        totals: OverviewTotals {
+            stations_total: totals.stations_total,
+            provinces_total: totals.provinces_total,
+            districts_total: totals.districts_total,
+            updates_last_24h: totals.updates_last_24h,
+            inventory_counts: to_inventory_counts(&totals),
+            avg_price_per_liter: totals.avg_price_per_liter.unwrap_or(0.0),
+        },
+        fuel_mix: to_fuel_mix(fuel_mix_rows),
+        breakdown: breakdown_rows
+            .into_iter()
+            .map(|row| AreaBreakdown {
+                area_name: row.area_name,
+                area_slug: row.area_slug,
+                stations_count: row.stations_count,
+                low_or_out_count: row.low_or_out_count,
+                updates_last_24h: row.updates_last_24h,
+            })
+            .collect(),
+    }))
+}
+
+pub async fn search_nearby_stations(
+    State(state): State<AppState>,
+    Query(query): Query<NearbySearchQuery>,
+) -> Result<Json<NearbySearchResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let radius = query.radius_km.unwrap_or(25.0);
+    let fuel_clause = if let Some(fuel_type) = sanitize_scope(&query.fuel_type) {
+        format!("AND LOWER(fs.fuel_type) = LOWER('{}')", fuel_type.replace('\'', "''"))
+    } else {
+        String::new()
+    };
+
+    let sql = format!(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter, fs.last_updated, (6371 * acos(LEAST(1, GREATEST(-1, cos(radians({lat})) * cos(radians(s.latitude)) * cos(radians(s.longitude) - radians({lng})) + sin(radians({lat})) * sin(radians(s.latitude)))))) AS distance_km FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE fs.inventory_level IN ('high', 'medium', 'low', 'refilling') {fuel_clause} AND (6371 * acos(LEAST(1, GREATEST(-1, cos(radians({lat})) * cos(radians(s.latitude)) * cos(radians(s.longitude) - radians({lng})) + sin(radians({lat})) * sin(radians(s.latitude)))))) <= {radius} ORDER BY distance_km ASC, fs.last_updated DESC LIMIT 25",
+        lat = query.lat,
+        lng = query.lng,
+        radius = radius,
+    );
+
+    let rows = sqlx::query_as::<_, SearchRow>(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+
+    Ok(Json(NearbySearchResponse {
+        origin_lat: query.lat,
+        origin_lng: query.lng,
+        radius_km: radius,
+        fuel_type: query.fuel_type.clone(),
+        results: rows.into_iter().map(search_row_to_result).collect(),
+    }))
+}
+
+pub async fn get_available_route_stations(
+    State(state): State<AppState>,
+    Query(query): Query<RouteQuery>,
+) -> Result<Json<RouteAvailableResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let sql = format!(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter, fs.last_updated, (6371 * acos(LEAST(1, GREATEST(-1, cos(radians({lat})) * cos(radians(s.latitude)) * cos(radians(s.longitude) - radians({lng})) + sin(radians({lat})) * sin(radians(s.latitude)))))) AS distance_km FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE LOWER(fs.fuel_type) = LOWER('{fuel_type}') AND fs.inventory_level IN ('high', 'medium', 'refilling', 'low') ORDER BY distance_km ASC, fs.amount_liters DESC LIMIT 20",
+        lat = query.origin_lat,
+        lng = query.origin_lng,
+        fuel_type = query.fuel_type.replace('\'', "''"),
+    );
+
+    let rows = sqlx::query_as::<_, SearchRow>(&sql)
+        .fetch_all(pool)
+        .await
+        .map_err(internal_error)?;
+
+    let stations = rows.into_iter().map(search_row_to_result).collect::<Vec<_>>();
+
+    Ok(Json(RouteAvailableResponse {
+        origin_lat: query.origin_lat,
+        origin_lng: query.origin_lng,
+        fuel_type: query.fuel_type,
+        total_results: stations.len(),
+        stations,
+    }))
+}
+
+pub async fn get_live_feed(
+    State(state): State<AppState>,
+) -> Result<Json<LiveFeedResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let rows = sqlx::query_as::<_, FeedRow>(
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.note, fs.updated_by, fs.last_updated FROM fuel_status fs JOIN stations s ON fs.station_id = s.id JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id ORDER BY fs.last_updated DESC LIMIT 30"
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(internal_error)?;
+
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            let (alert_level, auto_message) = match row.inventory_level.as_str() {
+                "out" => (
+                    "danger".to_string(),
+                    format!("{} หมด {}", row.station_name, row.fuel_type),
+                ),
+                "low" => (
+                    "warning".to_string(),
+                    format!("{} {} เหลือน้อย ({:.0} ลิตร)", row.station_name, row.fuel_type, row.amount_liters),
+                ),
+                "refilling" => (
+                    "normal".to_string(),
+                    format!("{} กำลังเติม {}", row.station_name, row.fuel_type),
+                ),
+                "medium" => (
+                    "warning".to_string(),
+                    format!("{} {} เหลือปานกลาง", row.station_name, row.fuel_type),
+                ),
+                _ => (
+                    "normal".to_string(),
+                    format!("{} อัปเดต {} ({:.0} ลิตร)", row.station_name, row.fuel_type, row.amount_liters),
+                ),
+            };
+
+            // Use staff note as message if available and meaningful
+            let message = row.note
+                .as_deref()
+                .filter(|n| !n.is_empty() && *n != "manual dashboard update")
+                .map(|n| n.to_string())
+                .unwrap_or(auto_message);
+
+            FeedItem {
+                station_id: row.station_id,
+                station_name: row.station_name,
+                brand: row.brand,
+                province: row.province,
+                province_slug: row.province_slug,
+                district: row.district,
+                district_slug: row.district_slug,
+                fuel_type: row.fuel_type,
+                inventory_level: row.inventory_level,
+                amount_liters: row.amount_liters,
+                last_updated: row.last_updated,
+                alert_level,
+                message,
+                updated_by: row.updated_by,
+            }
+        })
+        .collect();
+
+    Ok(Json(LiveFeedResponse {
+        generated_at: Utc::now(),
+        items,
+    }))
+}
+
+pub async fn register(
+    State(state): State<AppState>,
+    Json(payload): Json<RegisterRequest>,
+) -> Result<(StatusCode, Json<AuthResponse>), (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM app_users WHERE email = $1")
+        .bind(&payload.email)
+        .fetch_one(pool)
+        .await
+        .map_err(internal_error)?;
+
+    if existing > 0 {
+        return Err((StatusCode::CONFLICT, Json(ApiMessage { message: "email already exists".to_string() })));
+    }
+
+    let role = payload.role.clone().unwrap_or_else(|| "staff".to_string());
+
+    let user = sqlx::query_as::<_, AppUser>(
+        "INSERT INTO app_users (name, email, password, role, station_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, password, role, station_id, created_at"
+    )
+    .bind(&payload.name)
+    .bind(&payload.email)
+    .bind(&payload.password)
+    .bind(&role)
+    .bind(payload.station_id)
+    .fetch_one(pool)
+    .await
+    .map_err(internal_error)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(AuthResponse {
+            token: format!("demo-token-{}-{}", user.id, user.role),
+            user: AuthUser {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                station_id: user.station_id,
+            },
+        }),
+    ))
+}
+
+pub async fn login(
+    State(state): State<AppState>,
+    Json(payload): Json<LoginRequest>,
+) -> Result<Json<AuthResponse>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let user = sqlx::query_as::<_, AppUser>(
+        "SELECT id, name, email, password, role, station_id, created_at FROM app_users WHERE email = $1 AND password = $2"
+    )
+    .bind(&payload.email)
+    .bind(&payload.password)
+    .fetch_optional(pool)
+    .await
+    .map_err(internal_error)?;
+
+    let user = user.ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiMessage {
+                message: "invalid credentials".to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(AuthResponse {
+        token: format!("demo-token-{}-{}", user.id, user.role),
+        user: AuthUser {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            station_id: user.station_id,
+        },
+    }))
 }
 
 pub async fn update_fuel_status(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(id): Path<i32>,
-    Json(payload): Json<FuelStatus>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    sqlx::query(
-        "UPDATE fuel_status SET amount_liters = $1, status = $2, last_updated = NOW() WHERE station_id = $3 AND fuel_type = $4"
-    )
-    .bind(payload.amount_liters)
-    .bind(payload.status)
-    .bind(id)
-    .bind(payload.fuel_type)
-    .execute(&pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Json(payload): Json<StationUpdateRequest>,
+) -> Result<Json<ApiMessage>, (StatusCode, Json<ApiMessage>)> {
+    let pool = &state.pool;
+    let realtime = &state.realtime_hub;
+    let valid_level = matches!(
+        payload.inventory_level.as_str(),
+        "high" | "medium" | "low" | "out" | "refilling"
+    );
+    if !valid_level {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiMessage {
+                message: "inventory_level must be high, medium, low, out, or refilling".to_string(),
+            }),
+        ));
+    }
 
-    Ok(StatusCode::OK)
+    let station_exists = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM stations WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(internal_error)?;
+
+    if station_exists == 0 {
+        return Err(not_found("station not found"));
+    }
+
+    sqlx::query(
+        "INSERT INTO fuel_status (station_id, fuel_type, inventory_level, amount_liters, price_per_liter, updated_by, note, last_updated) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) ON CONFLICT (station_id, fuel_type) DO UPDATE SET inventory_level = EXCLUDED.inventory_level, amount_liters = EXCLUDED.amount_liters, price_per_liter = EXCLUDED.price_per_liter, updated_by = EXCLUDED.updated_by, note = EXCLUDED.note, last_updated = NOW()"
+    )
+    .bind(id)
+    .bind(&payload.fuel_type)
+    .bind(&payload.inventory_level)
+    .bind(payload.amount_liters)
+    .bind(payload.price_per_liter)
+    .bind(payload.updated_by.clone().unwrap_or_else(|| "staff".to_string()))
+    .bind(payload.note.clone().unwrap_or_else(|| "manual dashboard update".to_string()))
+    .execute(pool)
+    .await
+    .map_err(internal_error)?;
+
+    sqlx::query("UPDATE stations SET last_updated = NOW() WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(internal_error)?;
+
+    let refresh_scope = serde_json::json!({
+        "station_id": id,
+        "fuel_type": payload.fuel_type,
+        "inventory_level": payload.inventory_level,
+        "amount_liters": payload.amount_liters,
+        "price_per_liter": payload.price_per_liter,
+        "updated_by": payload.updated_by,
+        "note": payload.note,
+    })
+    .to_string();
+
+    realtime
+        .publish_update(
+            id,
+            "fuel_status_updated",
+            "map:station",
+            format!("station {} fuel status updated", id),
+        )
+        .await;
+    realtime
+        .publish_snapshot("station:update", "map:station", Some(id), refresh_scope)
+        .await;
+
+    Ok(Json(ApiMessage {
+        message: "fuel status updated".to_string(),
+    }))
+}
+
+fn search_row_to_result(row: SearchRow) -> NearbyStationResult {
+    NearbyStationResult {
+        station_id: row.station_id,
+        station_name: row.station_name,
+        brand: brand_key(&row.brand),
+        region: row.region,
+        province: row.province,
+        province_slug: row.province_slug,
+        district: row.district,
+        district_slug: row.district_slug,
+        address: row.address,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        fuel_type: row.fuel_type,
+        inventory_level: row.inventory_level,
+        amount_liters: row.amount_liters,
+        price_per_liter: row.price_per_liter,
+        last_updated: row.last_updated,
+        distance_km: row.distance_km,
+    }
+}
+
+fn internal_error(error: sqlx::Error) -> (StatusCode, Json<ApiMessage>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiMessage {
+            message: format!("database error: {error}"),
+        }),
+    )
+}
+
+fn not_found(message: &str) -> (StatusCode, Json<ApiMessage>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(ApiMessage {
+            message: message.to_string(),
+        }),
+    )
+}
+
+fn not_found_station() -> (StatusCode, Json<ApiMessage>) {
+    not_found("station not found")
+}
+// ── Chat handlers ─────────────────────────────────────────────────────────────
+
+pub async fn get_chat_messages(
+    State(app_state): State<AppState>,
+    Query(params): Query<ChatQuery>,
+) -> Result<Json<Vec<ChatMessage>>, StatusCode> {
+    let limit = sanitize_limit(params.limit, 50, 200);
+
+    let messages = match sanitize_scope(&params.province_slug) {
+        Some(slug) => sqlx::query_as::<_, ChatMessage>(
+            "SELECT id, sender, role, avatar, province_slug, text, sent_at
+             FROM chat_messages
+             WHERE province_slug = $1 OR province_slug IS NULL
+             ORDER BY sent_at ASC
+             LIMIT $2",
+        )
+        .bind(slug)
+        .bind(limit)
+        .fetch_all(&app_state.pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+
+        None => sqlx::query_as::<_, ChatMessage>(
+            "SELECT id, sender, role, avatar, province_slug, text, sent_at
+             FROM chat_messages
+             ORDER BY sent_at ASC
+             LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&app_state.pool)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    };
+
+    Ok(Json(messages))
+}
+
+pub async fn post_chat_message(
+    State(app_state): State<AppState>,
+    Json(payload): Json<PostChatMessage>,
+) -> Result<Json<ChatMessage>, StatusCode> {
+    let text: String = payload.text.trim().chars().take(500).collect();
+    if text.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let sender: String = payload.sender.trim().chars().take(100).collect();
+    let role: String = payload
+        .role
+        .unwrap_or_else(|| "เจ้าหน้าที่".to_string())
+        .trim()
+        .chars()
+        .take(100)
+        .collect();
+    let default_avatar = sender.chars().next().map(|c| c.to_string()).unwrap_or_else(|| "?".to_string());
+    let avatar: String = payload
+        .avatar
+        .unwrap_or(default_avatar)
+        .trim()
+        .chars()
+        .take(10)
+        .collect();
+
+    let msg = sqlx::query_as::<_, ChatMessage>(
+        "INSERT INTO chat_messages (sender, role, avatar, province_slug, text)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, sender, role, avatar, province_slug, text, sent_at",
+    )
+    .bind(&sender)
+    .bind(&role)
+    .bind(&avatar)
+    .bind(&payload.province_slug)
+    .bind(&text)
+    .fetch_one(&app_state.pool)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+    app_state
+        .realtime_hub
+        .publish_chat(
+            msg.id,
+            &msg.sender,
+            &msg.role,
+            &msg.avatar,
+            msg.province_slug.clone(),
+            &msg.text,
+            msg.sent_at,
+        )
+        .await;
+
+    Ok(Json(msg))
 }

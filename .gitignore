@@ -1,0 +1,20 @@
+# Common
+.env
+.env.*
+.DS_Store
+
+# Backend (Rust)
+backend/target/
+backend/.env
+
+# Frontend (Node/Next.js)
+frontend/node_modules/
+frontend/.next/
+frontend/.env.*
+frontend/dist/
+
+# Agent/AI Specific
+.agent/
+.claude/
+.gemini/
+.history/

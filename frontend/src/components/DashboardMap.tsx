@@ -1,69 +1,816 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, GeoJSON } from 'react-leaflet';
-import 'leaflet/dist/leaflet.css';
-import L from 'leaflet';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import Image from 'next/image';
+import Map, { Marker, NavigationControl, Popup, Source, Layer, type MapRef } from 'react-map-gl/maplibre';
+import type { LngLatBoundsLike, MapLayerMouseEvent } from 'maplibre-gl';
+import type { FeatureCollection, GeoJsonProperties, LineString, MultiPolygon, Polygon } from 'geojson';
+import { getBrandLogoUrl } from '@/lib/brandLogos';
+import { getFuelMeta } from '@/lib/fuelTypes';
+import type { FuelLevel, ScopeMeta, Station } from '@/lib/types';
 
-// Fix for default Leaflet icons in Next.js
-const DefaultIcon = L.icon({
-  iconUrl: '/markers/marker-icon.png',
-  shadowUrl: '/markers/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
-L.Marker.prototype.options.icon = DefaultIcon;
+interface DashboardMapProps {
+  stations?: Station[];
+  scope?: ScopeMeta;
+  onSelectStation?: (station: Station) => void;
+  searchOrigin?: {
+    lat: number;
+    lng: number;
+    radiusKm: number;
+  } | null;
+}
 
-export default function DashboardMap() {
-  const [geoData, setGeoData] = useState<any>(null);
+type BoundaryCollection = FeatureCollection<Polygon | MultiPolygon, GeoJsonProperties>;
 
+// ── Region definitions ──────────────────────────────────────────────────────
+
+type RegionKey = 'north' | 'northeast' | 'central' | 'east' | 'south';
+
+interface RegionMeta {
+  label: string;
+  color: string;
+  bounds: LngLatBoundsLike;
+}
+
+const REGION_META: Record<RegionKey, RegionMeta> = {
+  north: {
+    label: 'ภาคเหนือ',
+    color: '#4a9ee8',
+    bounds: [[97.3, 17.4], [101.4, 20.5]],
+  },
+  northeast: {
+    label: 'ภาคอีสาน',
+    color: '#f5a623',
+    bounds: [[100.0, 13.9], [105.7, 18.5]],
+  },
+  central: {
+    label: 'ภาคกลาง',
+    color: '#7ed321',
+    bounds: [[97.6, 12.5], [102.0, 17.6]],
+  },
+  east: {
+    label: 'ภาคตะวันออก',
+    color: '#bd10e0',
+    bounds: [[100.7, 11.8], [104.6, 14.4]],
+  },
+  south: {
+    label: 'ภาคใต้',
+    color: '#e74c3c',
+    bounds: [[98.0, 5.2], [103.2, 12.6]],
+  },
+};
+
+const REGION_ORDER: RegionKey[] = ['north', 'northeast', 'central', 'east', 'south'];
+
+// ── Province → Region mapping ────────────────────────────────────────────────
+
+const PROVINCE_REGION: Record<string, RegionKey> = {
+  // North
+  'Chiang Mai': 'north',
+  'Chiang Rai': 'north',
+  Lampang: 'north',
+  Lamphun: 'north',
+  'Mae Hong Son': 'north',
+  Nan: 'north',
+  Phayao: 'north',
+  Phrae: 'north',
+  Uttaradit: 'north',
+  // Northeast / Isan
+  'Amnat Charoen': 'northeast',
+  'Bueng Kan': 'northeast',
+  'Buri Ram': 'northeast',
+  Chaiyaphum: 'northeast',
+  Kalasin: 'northeast',
+  'Khon Kaen': 'northeast',
+  Loei: 'northeast',
+  'Maha Sarakham': 'northeast',
+  Mukdahan: 'northeast',
+  'Nakhon Phanom': 'northeast',
+  'Nakhon Ratchasima': 'northeast',
+  'Nong Bua Lam Phu': 'northeast',
+  'Nong Khai': 'northeast',
+  'Roi Et': 'northeast',
+  'Sakon Nakhon': 'northeast',
+  'Si Sa Ket': 'northeast',
+  Surin: 'northeast',
+  'Ubon Ratchathani': 'northeast',
+  'Udon Thani': 'northeast',
+  Yasothon: 'northeast',
+  // Central
+  'Ang Thong': 'central',
+  'Bangkok Metropolis': 'central',
+  'Chai Nat': 'central',
+  'Kamphaeng Phet': 'central',
+  Kanchanaburi: 'central',
+  'Lop Buri': 'central',
+  'Nakhon Nayok': 'central',
+  'Nakhon Pathom': 'central',
+  'Nakhon Sawan': 'central',
+  Nonthaburi: 'central',
+  'Pathum Thani': 'central',
+  Phetchabun: 'central',
+  Phichit: 'central',
+  Phitsanulok: 'central',
+  'Phra Nakhon Si Ayutthaya': 'central',
+  Ratchaburi: 'central',
+  Saraburi: 'central',
+  'Sing Buri': 'central',
+  Sukhothai: 'central',
+  'Suphan Buri': 'central',
+  Tak: 'central',
+  'Uthai Thani': 'central',
+  // East
+  Chachoengsao: 'east',
+  Chanthaburi: 'east',
+  'Chon Buri': 'east',
+  'Prachin Buri': 'east',
+  Rayong: 'east',
+  'Sa Kaeo': 'east',
+  Trat: 'east',
+  // South
+  Chumphon: 'south',
+  Krabi: 'south',
+  'Nakhon Si Thammarat': 'south',
+  Narathiwat: 'south',
+  Pattani: 'south',
+  Phangnga: 'south',
+  Phatthalung: 'south',
+  Phuket: 'south',
+  'Prachuap Khiri Khan': 'south',
+  Ranong: 'south',
+  Satun: 'south',
+  Songkhla: 'south',
+  'Surat Thani': 'south',
+  Trang: 'south',
+  Yala: 'south',
+  // Samut provinces (Central)
+  'Samut Prakan': 'central',
+  'Samut Sakhon': 'central',
+  'Samut Songkhram': 'central',
+  // Phetchaburi (Central/South border — Central)
+  Phetchaburi: 'central',
+};
+
+// ── Map config ────────────────────────────────────────────────────────────────
+
+const THAILAND_CENTER = {
+  longitude: 101.0,
+  latitude: 13.0,
+  zoom: 5.5,
+};
+
+const THAILAND_BOUNDS: LngLatBoundsLike = [
+  [97.2, 5.0],
+  [105.9, 20.8],
+];
+
+const VALLARIS_API_KEY = process.env.NEXT_PUBLIC_VALLARIS_API_KEY ?? '';
+const VALLARIS_STYLE_ID = '69c3777e84500caebd3ecbd5';
+const MAP_STYLE = VALLARIS_API_KEY
+  ? `https://app.vallarismaps.com/core/api/styles/1.0-beta/styles/${VALLARIS_STYLE_ID}?api_key=${VALLARIS_API_KEY}`
+  : 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+
+const EMPTY_BOUNDARY_SOURCE: BoundaryCollection = { type: 'FeatureCollection', features: [] };
+
+// ── Status styling ────────────────────────────────────────────────────────────
+
+const STATUS_PRIORITY: FuelLevel[] = ['out', 'low', 'refilling', 'medium', 'high'];
+
+const STATUS_TONE: Record<FuelLevel, { color: string; glow: string; label: string }> = {
+  out: { color: '#ff4f70', glow: 'rgba(255,79,112,0.42)', label: 'หมด' },
+  low: { color: '#ff9a3d', glow: 'rgba(255,154,61,0.38)', label: 'ใกล้หมด' },
+  refilling: { color: '#32d9ff', glow: 'rgba(50,217,255,0.4)', label: 'เติม' },
+  medium: { color: '#ffcc52', glow: 'rgba(255,204,82,0.32)', label: 'เฝ้าระวัง' },
+  high: { color: '#2fe08d', glow: 'rgba(47,224,141,0.34)', label: 'ปกติ' },
+};
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+function getWorstFuelStatus(station: Station): FuelLevel {
+  const pool = [station.status, ...station.fuels.map((f) => f.status)];
+  for (const level of STATUS_PRIORITY) {
+    if (pool.includes(level)) return level;
+  }
+  return 'high';
+}
+
+const PROVINCE_THAI: Record<string, string> = {
+  'Amnat Charoen': 'อำนาจเจริญ', 'Ang Thong': 'อ่างทอง', 'Bangkok Metropolis': 'กรุงเทพมหานคร',
+  'Bueng Kan': 'บึงกาฬ', 'Buri Ram': 'บุรีรัมย์', 'Chachoengsao': 'ฉะเชิงเทรา',
+  'Chai Nat': 'ชัยนาท', 'Chaiyaphum': 'ชัยภูมิ', 'Chanthaburi': 'จันทบุรี',
+  'Chiang Mai': 'เชียงใหม่', 'Chiang Rai': 'เชียงราย', 'Chon Buri': 'ชลบุรี',
+  'Chumphon': 'ชุมพร', 'Kalasin': 'กาฬสินธุ์', 'Kamphaeng Phet': 'กำแพงเพชร',
+  'Kanchanaburi': 'กาญจนบุรี', 'Khon Kaen': 'ขอนแก่น', 'Krabi': 'กระบี่',
+  'Lampang': 'ลำปาง', 'Lamphun': 'ลำพูน', 'Loei': 'เลย', 'Lop Buri': 'ลพบุรี',
+  'Mae Hong Son': 'แม่ฮ่องสอน', 'Maha Sarakham': 'มหาสารคาม', 'Mukdahan': 'มุกดาหาร',
+  'Nakhon Nayok': 'นครนายก', 'Nakhon Pathom': 'นครปฐม', 'Nakhon Phanom': 'นครพนม',
+  'Nakhon Ratchasima': 'นครราชสีมา', 'Nakhon Sawan': 'นครสวรรค์',
+  'Nakhon Si Thammarat': 'นครศรีธรรมราช', 'Nan': 'น่าน', 'Narathiwat': 'นราธิวาส',
+  'Nong Bua Lam Phu': 'หนองบัวลำภู', 'Nong Khai': 'หนองคาย', 'Nonthaburi': 'นนทบุรี',
+  'Pathum Thani': 'ปทุมธานี', 'Pattani': 'ปัตตานี', 'Phangnga': 'พังงา',
+  'Phatthalung': 'พัทลุง', 'Phayao': 'พะเยา', 'Phetchabun': 'เพชรบูรณ์',
+  'Phetchaburi': 'เพชรบุรี', 'Phichit': 'พิจิตร', 'Phitsanulok': 'พิษณุโลก',
+  'Phra Nakhon Si Ayutthaya': 'พระนครศรีอยุธยา', 'Phrae': 'แพร่', 'Phuket': 'ภูเก็ต',
+  'Prachin Buri': 'ปราจีนบุรี', 'Prachuap Khiri Khan': 'ประจวบคีรีขันธ์',
+  'Ranong': 'ระนอง', 'Ratchaburi': 'ราชบุรี', 'Rayong': 'ระยอง', 'Roi Et': 'ร้อยเอ็ด',
+  'Sa Kaeo': 'สระแก้ว', 'Sakon Nakhon': 'สกลนคร', 'Samut Prakan': 'สมุทรปราการ',
+  'Samut Sakhon': 'สมุทรสาคร', 'Samut Songkhram': 'สมุทรสงคราม', 'Saraburi': 'สระบุรี',
+  'Satun': 'สตูล', 'Si Sa Ket': 'ศรีสะเกษ', 'Sing Buri': 'สิงห์บุรี',
+  'Songkhla': 'สงขลา', 'Sukhothai': 'สุโขทัย', 'Suphan Buri': 'สุพรรณบุรี',
+  'Surat Thani': 'สุราษฎร์ธานี', 'Surin': 'สุรินทร์', 'Tak': 'ตาก',
+  'Trang': 'ตรัง', 'Trat': 'ตราด', 'Ubon Ratchathani': 'อุบลราชธานี',
+  'Udon Thani': 'อุดรธานี', 'Uthai Thani': 'อุทัยธานี', 'Uttaradit': 'อุตรดิตถ์',
+  'Yala': 'ยะลา', 'Yasothon': 'ยโสธร',
+};
+
+function provinceNameToSlug(name: string): string {
+  const overrides: Record<string, string> = {
+    'Bangkok Metropolis': 'bangkok',
+    'Phra Nakhon Si Ayutthaya': 'phra-nakhon-si-ayutthaya',
+    'Nakhon Ratchasima': 'nakhon-ratchasima',
+  };
+  return overrides[name] ?? name.toLowerCase().replace(/\s+/g, '-');
+}
+
+function provinceThai(name: string): string {
+  return PROVINCE_THAI[name] ?? name;
+}
+
+function enrichBoundaries(raw: BoundaryCollection): BoundaryCollection {
+  return {
+    ...raw,
+    features: raw.features.map((f) => {
+      const name = String(f.properties?.name ?? '');
+      const region: RegionKey = PROVINCE_REGION[name] ?? 'central';
+      return { ...f, properties: { ...f.properties, region, slug: provinceNameToSlug(name) } };
+    }),
+  };
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export default function DashboardMap({ stations = [], scope, onSelectStation, searchOrigin }: DashboardMapProps) {
+  const mapRef = useRef<MapRef | null>(null);
+  const router = useRouter();
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const [popupStation, setPopupStation] = useState<Station | null>(null);
+  const [logoFailures, setLogoFailures] = useState<Record<number, boolean>>({});
+  const [rawBoundaries, setRawBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARY_SOURCE);
+  const [districts, setDistricts] = useState<BoundaryCollection>(EMPTY_BOUNDARY_SOURCE);
+  const [selectedRegion, setSelectedRegion] = useState<RegionKey | null>(null);
+  const [hoveredProvince, setHoveredProvince] = useState<string | null>(null);
+  const [mapZoom, setMapZoom] = useState(5.5);
+  const prevSelectedRegion = useRef<RegionKey | null>(null);
+  const [routeLine, setRouteLine] = useState<FeatureCollection<LineString, GeoJsonProperties> | null>(null);
+  const [routeInfo, setRouteInfo] = useState<{ distanceKm: number; durationMin: number } | null>(null);
+  const [routeLoading, setRouteLoading] = useState(false);
+
+  // Load + enrich province GeoJSON
   useEffect(() => {
-    // In a real app, fetch actual Thai boundaries GeoJSON
-    // For now, this is a placeholder for the logic
+    let active = true;
+    fetch('/thailand-boundaries.geojson')
+      .then((r) => r.json())
+      .then((data) => { if (active) setRawBoundaries(enrichBoundaries(data as BoundaryCollection)); })
+      .catch(() => { if (active) setRawBoundaries(EMPTY_BOUNDARY_SOURCE); });
+    return () => { active = false; };
   }, []);
 
+  // Load district GeoJSON (lazy — loaded after province data)
+  useEffect(() => {
+    let active = true;
+    fetch('/thailand-districts.geojson')
+      .then((r) => r.json())
+      .then((data) => { if (active) setDistricts(data as BoundaryCollection); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  const boundaries = rawBoundaries;
+
+  // Data-driven fill color expression based on region
+  const fillColorExpr = useMemo(() => {
+    const expr: unknown[] = ['match', ['get', 'region']];
+    for (const key of REGION_ORDER) {
+      const hex = REGION_META[key].color;
+      expr.push(key, hex);
+    }
+    expr.push('#888888'); // fallback
+    return expr as unknown as string;
+  }, []);
+
+  const fillOpacity = useMemo(() => {
+    if (scope?.province_slug) {
+      return ['case', ['==', ['get', 'slug'], scope.province_slug], 0.42, 0.05] as unknown as number;
+    }
+    if (selectedRegion) {
+      return ['case', ['==', ['get', 'region'], selectedRegion], 0.28, 0.10] as unknown as number;
+    }
+    return 0.20;
+  }, [selectedRegion, scope?.province_slug]);
+
+  const lineOpacity = useMemo(() => {
+    if (scope?.province_slug) {
+      return ['case', ['==', ['get', 'slug'], scope.province_slug], 1.0, 0.12] as unknown as number;
+    }
+    if (selectedRegion) {
+      return ['case', ['==', ['get', 'region'], selectedRegion], 1.0, 0.35] as unknown as number;
+    }
+    return 0.7;
+  }, [selectedRegion, scope?.province_slug]);
+
+  // Fly to selected region — only after user explicitly changes it (not on mount)
+  useEffect(() => {
+    if (!mapLoaded) return;
+    const map = mapRef.current;
+    if (!map) return;
+    const prev = prevSelectedRegion.current;
+    prevSelectedRegion.current = selectedRegion;
+    // Skip if nothing actually changed
+    if (prev === selectedRegion) return;
+    if (selectedRegion) {
+      map.fitBounds(REGION_META[selectedRegion].bounds as LngLatBoundsLike, {
+        padding: 48,
+        duration: 900,
+        maxZoom: 7.5,
+      });
+    } else {
+      map.fitBounds(THAILAND_BOUNDS, { padding: 40, duration: 900, maxZoom: 5.8 });
+    }
+  }, [selectedRegion, mapLoaded]);
+
+  // Zoom to province/district boundary from GeoJSON
+  useEffect(() => {
+    if (!mapLoaded) return;
+    const map = mapRef.current;
+    if (!map || !scope || scope.level === 'national') return;
+
+    // Try to fit province boundary from loaded GeoJSON
+    if ((scope.level === 'province' || scope.level === 'district') && scope.province_slug && rawBoundaries.features.length > 0) {
+      const feature = rawBoundaries.features.find(
+        (f) => String(f.properties?.slug ?? '') === scope.province_slug,
+      );
+      if (feature?.geometry) {
+        const bbox = geoBbox(feature.geometry as GeoJsonGeometry);
+        if (bbox) {
+          map.fitBounds(bbox, { padding: 64, duration: 1000, maxZoom: 10 });
+          return;
+        }
+      }
+    }
+
+    // Region fallback
+    if (scope.region) {
+      const regionKey = scope.region.toLowerCase().replace(/\s+/g, '') as RegionKey;
+      const meta = REGION_META[regionKey];
+      if (meta) {
+        map.fitBounds(meta.bounds as LngLatBoundsLike, { padding: 40, duration: 900, maxZoom: 8 });
+        return;
+      }
+    }
+
+    map.fitBounds(THAILAND_BOUNDS, { padding: 40, duration: 800, maxZoom: 5.8 });
+  }, [scope, mapLoaded, rawBoundaries]);
+
+  // Fly to searchOrigin
+  useEffect(() => {
+    if (!mapLoaded) return;
+    const map = mapRef.current;
+    if (!map || !searchOrigin) return;
+    map.flyTo({ center: [searchOrigin.lng, searchOrigin.lat], zoom: 12, duration: 1200 });
+  }, [searchOrigin, mapLoaded]);
+
+  // Fetch driving route from OSRM
+  const fetchRoute = useCallback(async (station: Station) => {
+    if (!searchOrigin) { setRouteLine(null); setRouteInfo(null); return; }
+    setRouteLoading(true);
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/`
+        + `${searchOrigin.lng},${searchOrigin.lat};${station.lng},${station.lat}`
+        + `?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      const data = await res.json() as {
+        routes: Array<{ distance: number; duration: number; geometry: LineString }>;
+      };
+      const route = data.routes[0];
+      if (!route) return;
+      setRouteLine({
+        type: 'FeatureCollection',
+        features: [{ type: 'Feature', properties: {}, geometry: route.geometry }],
+      });
+      setRouteInfo({
+        distanceKm: route.distance / 1000,
+        durationMin: route.duration / 60,
+      });
+    } catch {
+      setRouteLine(null);
+      setRouteInfo(null);
+    } finally {
+      setRouteLoading(false);
+    }
+  }, [searchOrigin]);
+
+  const handleProvinceClick = useCallback((event: MapLayerMouseEvent) => {
+    const feature = event.features?.[0];
+    if (!feature) return;
+    const slug = String(feature.properties?.slug ?? '');
+    if (slug) {
+      router.push(`/province/${slug}`);
+    }
+  }, [router]);
+
+  const handleProvinceHover = useCallback((event: MapLayerMouseEvent) => {
+    const feature = event.features?.[0];
+    setHoveredProvince(feature ? String(feature.properties?.name ?? '') : null);
+  }, []);
+
+  const handleProvinceLeave = useCallback(() => {
+    setHoveredProvince(null);
+  }, []);
+
+  const handleRegionClick = useCallback((key: RegionKey) => {
+    setSelectedRegion((prev) => (prev === key ? null : key));
+  }, []);
+
+  // Search radius polygon
+  const searchRadiusCollection = useMemo(() => {
+    if (!searchOrigin) return null;
+    const { lng, lat, radiusKm } = searchOrigin;
+    const coords = createCircleCoords(lng, lat, radiusKm);
+    return {
+      type: 'FeatureCollection',
+      features: [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [coords] } }],
+    } as BoundaryCollection;
+  }, [searchOrigin]);
+
   return (
-    <MapContainer 
-      center={[13.736717, 100.523186]} 
-      zoom={6} 
-      style={{ height: '100%', width: '100%' }}
-    >
-      <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-        attribution='&copy; OpenStreetMap'
-      />
-      
-      {/* Example Marker for a PTT station */}
-      <Marker position={[13.805, 100.555]} icon={L.icon({
-        iconUrl: process.env.NEXT_PUBLIC_LOGO_PTT || '/markers/marker-icon.png',
-        iconSize: [32, 32],
-        className: 'brand-marker'
-      })}>
-        <Popup>
-          <div style={{ color: '#000' }}>
-            <strong>PTT Station วิภาวดี</strong><br/>
-            ดีเซล: ปกติ (80%)<br/>
-            แก๊สโซฮอล์ 95: ใกล้หมด (15%)
-          </div>
-        </Popup>
-      </Marker>
+    <div className="map-shell maplibre-shell">
 
-      {/* Example Marker for a Shell station */}
-      <Marker position={[13.754, 100.578]} icon={L.icon({
-        iconUrl: process.env.NEXT_PUBLIC_LOGO_SHELL || '/markers/marker-icon.png',
-        iconSize: [32, 32],
-        className: 'brand-marker'
-      })}>
-        <Popup>
-          <div style={{ color: '#000' }}>
-            <strong>Shell พระราม 9</strong><br/>
-            ดีเซล: ปกติ (90%)<br/>
-            แก๊สโซฮอล์ 95: ปกติ (85%)
-          </div>
-        </Popup>
-      </Marker>
+      <Map
+        ref={mapRef}
+        initialViewState={THAILAND_CENTER}
+        mapStyle={MAP_STYLE}
+        attributionControl={false}
+        dragRotate={false}
+        pitchWithRotate={false}
+        style={{ width: '100%', height: '100%' }}
+        interactiveLayerIds={['province-fill']}
+        onClick={handleProvinceClick}
+        onMouseMove={handleProvinceHover}
+        onMouseLeave={handleProvinceLeave}
+        cursor={hoveredProvince ? 'pointer' : 'grab'}
+        onZoom={(e) => setMapZoom(e.viewState.zoom)}
+        onLoad={() => {
+          const map = mapRef.current;
+          if (map) {
+            map.fitBounds(THAILAND_BOUNDS, { padding: 24, duration: 0 });
+          }
+          setMapLoaded(true);
+        }}
+        transformRequest={(url: string) => {
+          if (VALLARIS_API_KEY && url.includes('vallarismaps.com') && !url.includes('api_key=')) {
+            const sep = url.includes('?') ? '&' : '?';
+            return { url: `${url}${sep}api_key=${VALLARIS_API_KEY}` };
+          }
+          return { url };
+        }}
+      >
+        <NavigationControl position="top-right" showCompass={false} visualizePitch={false} />
 
-      {geoData && <GeoJSON data={geoData} style={{ color: '#58a6ff', weight: 1, fillOpacity: 0.1 }} />}
-    </MapContainer>
+        {/* District lines — visible at zoom ≥ 7 */}
+        <Source id="districts" type="geojson" data={districts}>
+          <Layer
+            id="district-line"
+            type="line"
+            minzoom={7}
+            paint={{
+              'line-color': 'rgba(255,255,255,0.25)',
+              'line-width': ['interpolate', ['linear'], ['zoom'], 7, 0.5, 10, 1.2] as unknown as number,
+              'line-dasharray': [2, 2] as [number, number],
+            }}
+          />
+        </Source>
+
+        {/* Province fill — colored by region */}
+        <Source id="provinces" type="geojson" data={boundaries}>
+          <Layer
+            id="province-fill"
+            type="fill"
+            paint={{
+              'fill-color': fillColorExpr,
+              'fill-opacity': fillOpacity,
+            }}
+          />
+          <Layer
+            id="province-line"
+            type="line"
+            paint={{
+              'line-color': fillColorExpr,
+              'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.8, 6, 1.2, 8, 2] as unknown as number,
+              'line-opacity': lineOpacity,
+            }}
+          />
+          {/* Hover highlight */}
+          {hoveredProvince && (
+            <Layer
+              id="province-hover"
+              type="fill"
+              filter={['==', ['get', 'name'], hoveredProvince]}
+              paint={{ 'fill-color': '#ffffff', 'fill-opacity': 0.15 }}
+            />
+          )}
+          {/* Selected province glow */}
+          {scope?.province_slug && (
+            <Layer
+              id="province-selected-glow"
+              type="line"
+              filter={['==', ['get', 'slug'], scope.province_slug]}
+              paint={{
+                'line-color': '#ffffff',
+                'line-width': ['interpolate', ['linear'], ['zoom'], 4, 2, 8, 3.5] as unknown as number,
+                'line-opacity': 0.85,
+                'line-blur': 1,
+              }}
+            />
+          )}
+        </Source>
+
+        {/* Search radius ring */}
+        {searchRadiusCollection && (
+          <Source id="search-radius" type="geojson" data={searchRadiusCollection}>
+            <Layer id="search-radius-fill" type="fill" paint={{ 'fill-color': '#ff8a00', 'fill-opacity': 0.08 }} />
+            <Layer id="search-radius-line" type="line" paint={{ 'line-color': '#ff9a3d', 'line-width': 2, 'line-opacity': 0.8, 'line-dasharray': [1.5, 1.5] as [number, number] }} />
+          </Source>
+        )}
+
+        {/* Driving route line */}
+        {routeLine && (
+          <Source id="route-line" type="geojson" data={routeLine}>
+            <Layer id="route-casing" type="line"
+              layout={{ 'line-join': 'round', 'line-cap': 'round' }}
+              paint={{ 'line-color': '#000', 'line-width': 6, 'line-opacity': 0.25 }} />
+            <Layer id="route-fill" type="line"
+              layout={{ 'line-join': 'round', 'line-cap': 'round' }}
+              paint={{ 'line-color': '#4a9ee8', 'line-width': 4, 'line-opacity': 0.9 }} />
+          </Source>
+        )}
+
+        {/* Current location pin */}
+        {searchOrigin && (
+          <Marker longitude={searchOrigin.lng} latitude={searchOrigin.lat} anchor="center">
+            <div className="map-my-location">
+              <div className="map-my-location-ring" />
+              <div className="map-my-location-dot" />
+            </div>
+          </Marker>
+        )}
+
+        {/* Station markers */}
+        {stations.map((station, index) => {
+          const worst = getWorstFuelStatus(station);
+          const tone = STATUS_TONE[worst];
+          const showFallback = logoFailures[station.id];
+          const logoSrc = getBrandLogoUrl(station.brand);
+          // Show full detail card only when zoomed in close enough to the station
+          const isCard = mapZoom >= 15;
+          const isSmall = !isCard && !scope?.province_slug && mapZoom < 9;
+
+          return (
+            <Marker key={`${station.id}-${index}`} longitude={station.lng} latitude={station.lat} anchor="bottom">
+              <button
+                type="button"
+                className={isCard ? 'map-station-card' : `map-station-marker${isSmall ? ' map-station-marker--sm' : ''}`}
+                style={{ '--marker-color': tone.color, '--marker-glow': tone.glow } as React.CSSProperties}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const next = popupStation?.id === station.id ? null : station;
+                  setPopupStation(next);
+                  if (next) void fetchRoute(next); else { setRouteLine(null); setRouteInfo(null); }
+                  onSelectStation?.(station);
+                }}
+                aria-label={`สถานี ${station.name}`}
+              >
+                {isCard ? (
+                  <>
+                    <div className="map-station-card-head">
+                      <div className="map-station-card-logo-wrap">
+                        {!showFallback ? (
+                          <Image src={logoSrc || '/brands/fallback.svg'} alt={station.brand} width={20} height={20} unoptimized
+                            onError={() => setLogoFailures((c) => ({ ...c, [station.id]: true }))} />
+                        ) : (
+                          <span className="map-station-card-fallback">{(station.brand_key || station.brand).slice(0, 2).toUpperCase()}</span>
+                        )}
+                      </div>
+                      <span className="map-station-card-name">{station.name.length > 14 ? station.name.slice(0, 14) + '…' : station.name}</span>
+                      <span className={`map-station-card-status-icon sc-${worst}`} />
+                    </div>
+                    <div className="map-station-card-fuels">
+                      {station.fuels.slice(0, 4).map((f, fi) => {
+                        const fm = getFuelMeta(f.fuel_type);
+                        return (
+                          <span key={fi} className={`map-fuel-badge fb-${f.status}`}
+                            style={{ '--fuel-color': fm.color } as React.CSSProperties}>
+                            {fm.abbr}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <span className="map-station-marker-bubble">
+                    <span className="map-station-marker-pulse" />
+                    <span className="map-station-marker-core">
+                      {!showFallback ? (
+                        <Image src={logoSrc || '/brands/fallback.svg'} alt={station.brand} width={20} height={20}
+                          className="map-station-marker-logo" unoptimized
+                          onError={() => setLogoFailures((c) => ({ ...c, [station.id]: true }))} />
+                      ) : (
+                        <span className="map-station-marker-fallback">{(station.brand_key || station.brand).slice(0, 2).toUpperCase()}</span>
+                      )}
+                    </span>
+                  </span>
+                )}
+              </button>
+            </Marker>
+          );
+        })}
+
+        {/* Station popup */}
+        {popupStation && (
+          <Popup
+            longitude={popupStation.lng}
+            latitude={popupStation.lat}
+            anchor="bottom"
+            offset={28}
+            closeButton={false}
+            closeOnClick={false}
+            onClose={() => setPopupStation(null)}
+            className="maplibre-popup"
+          >
+            <div className="map-popup-v2">
+              {/* Header */}
+              <div className="map-popup-v2-head">
+                <div className="map-popup-v2-logo">
+                  <Image src={getBrandLogoUrl(popupStation.brand) || '/brands/fallback.svg'}
+                    alt={popupStation.brand} width={32} height={32} unoptimized
+                    onError={() => setLogoFailures((c) => ({ ...c, [popupStation.id]: true }))} />
+                </div>
+                <div className="map-popup-v2-info">
+                  <strong className="map-popup-v2-name">{popupStation.name}</strong>
+                  <span className="map-popup-v2-loc">{popupStation.district_name} · {popupStation.province_name}</span>
+                </div>
+                <span className={`map-popup-v2-badge badge-${popupStation.status}`}>
+                  {popupStation.status === 'high' || popupStation.status === 'medium' ? '✓' : popupStation.status === 'refilling' ? '↻' : '✗'}
+                  {' '}{STATUS_TONE[popupStation.status as FuelLevel]?.label ?? popupStation.status}
+                </span>
+                <button type="button" className="map-popup-v2-close" onClick={() => setPopupStation(null)}>✕</button>
+              </div>
+
+              {/* Fuel badges */}
+              <div className="map-popup-v2-fuels">
+                {popupStation.fuels.map((f, i) => {
+                  const fm = getFuelMeta(f.fuel_type);
+                  return (
+                    <span key={i} className={`map-fuel-badge-lg fb-${f.status}`}
+                      style={{ '--fuel-color': fm.color } as React.CSSProperties}>
+                      <span className="map-fuel-badge-type">{fm.abbr}</span>
+                      <span className="map-fuel-badge-liters">{f.liters >= 1000 ? `${(f.liters/1000).toFixed(1)}k` : f.liters} L</span>
+                    </span>
+                  );
+                })}
+              </div>
+
+              {/* Route info */}
+              {searchOrigin && (
+                <div className="map-popup-route">
+                  {routeLoading && <span className="map-popup-route-loading">กำลังคำนวณเส้นทาง…</span>}
+                  {!routeLoading && routeInfo && (
+                    <>
+                      <span className="map-popup-route-stat">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6l9-3 9 3M3 18l9 3 9-3"/></svg>
+                        {routeInfo.distanceKm.toFixed(1)} กม.
+                      </span>
+                      <span className="map-popup-route-stat">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        {routeInfo.durationMin < 60
+                          ? `${Math.round(routeInfo.durationMin)} นาที`
+                          : `${Math.floor(routeInfo.durationMin / 60)} ชม. ${Math.round(routeInfo.durationMin % 60)} นาที`}
+                      </span>
+                      <a
+                        href={`https://www.google.com/maps/dir/?api=1&origin=${searchOrigin.lat},${searchOrigin.lng}&destination=${popupStation.lat},${popupStation.lng}&travelmode=driving`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="map-popup-nav-btn"
+                        title="นำทาง Google Maps"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg>
+                      </a>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Footer */}
+              <div className="map-popup-v2-footer">
+                <span className="map-popup-v2-time">
+                  อัปเดต {new Date(popupStation.last_updated).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
+                </span>
+                <Link href={`/staff/update?station_id=${popupStation.id}&name=${encodeURIComponent(popupStation.name)}`}
+                  className="map-popup-update-btn">บันทึก</Link>
+              </div>
+            </div>
+          </Popup>
+        )}
+      </Map>
+
+      {/* ── Region selector overlay ── */}
+      <div className="map-region-bar">
+        <button
+          type="button"
+          className={`map-region-chip ${!selectedRegion ? 'active' : ''}`}
+          onClick={() => setSelectedRegion(null)}
+          style={{ '--chip-color': '#67a6ff' } as React.CSSProperties}
+        >
+          ทั้งประเทศ
+        </button>
+        {REGION_ORDER.map((key) => (
+          <button
+            key={key}
+            type="button"
+            className={`map-region-chip ${selectedRegion === key ? 'active' : ''}`}
+            style={{ '--chip-color': REGION_META[key].color } as React.CSSProperties}
+            onClick={() => handleRegionClick(key)}
+          >
+            <span className="map-region-dot" style={{ background: REGION_META[key].color }} />
+            {REGION_META[key].label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Hover province tooltip ── */}
+      {hoveredProvince && (
+        <div className="map-province-tooltip">
+          {provinceThai(hoveredProvince)}
+          <span className="map-province-tooltip-hint">คลิกเพื่อดูภาพรวมจังหวัด</span>
+        </div>
+      )}
+
+      {/* ── HUD ── */}
+      <div className="map-shell-hud">
+        <div className="map-shell-hud-chip">
+          <span className="map-shell-hud-dot" />
+          {selectedRegion ? REGION_META[selectedRegion].label : 'แผนที่ประเทศไทย'}
+        </div>
+        <div className="map-shell-hud-chip map-shell-hud-chip--ghost">{stations.length.toLocaleString()} สถานี</div>
+      </div>
+    </div>
   );
+}
+
+// ── Geo bbox helper ───────────────────────────────────────────────────────────
+
+type GeoJsonGeometry = Polygon | MultiPolygon;
+
+function geoBbox(geometry: GeoJsonGeometry): LngLatBoundsLike | null {
+  const pts: [number, number][] = [];
+  if (geometry.type === 'Polygon') {
+    for (const [lng, lat] of geometry.coordinates[0]) pts.push([lng, lat]);
+  } else {
+    for (const poly of geometry.coordinates) {
+      for (const [lng, lat] of poly[0]) pts.push([lng, lat]);
+    }
+  }
+  if (pts.length === 0) return null;
+  let minLng = pts[0][0], maxLng = pts[0][0], minLat = pts[0][1], maxLat = pts[0][1];
+  for (const [lng, lat] of pts) {
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  return [[minLng, minLat], [maxLng, maxLat]];
+}
+
+// ── Circle polygon helper ─────────────────────────────────────────────────────
+
+function createCircleCoords(centerLng: number, centerLat: number, radiusKm: number, steps = 64): [number, number][] {
+  const earthR = 6371;
+  const lat = (centerLat * Math.PI) / 180;
+  const lng = (centerLng * Math.PI) / 180;
+  const d = radiusKm / earthR;
+  const coords: [number, number][] = [];
+
+  for (let i = 0; i <= steps; i++) {
+    const bearing = (i / steps) * Math.PI * 2;
+    const sinLat = Math.sin(lat);
+    const cosLat = Math.cos(lat);
+    const newLat = Math.asin(sinLat * Math.cos(d) + cosLat * Math.sin(d) * Math.cos(bearing));
+    const newLng = lng + Math.atan2(Math.sin(bearing) * Math.sin(d) * cosLat, Math.cos(d) - sinLat * Math.sin(newLat));
+    coords.push([(newLng * 180) / Math.PI, (newLat * 180) / Math.PI]);
+  }
+
+  return coords;
 }

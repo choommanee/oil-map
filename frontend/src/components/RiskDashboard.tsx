@@ -1,48 +1,66 @@
-import React from 'react';
+import type { RegionSummary } from '@/lib/types';
 
-interface RiskStat {
-  region: string;
-  status: 'normal' | 'warning' | 'danger';
-  percentage: number;
+interface RiskDashboardProps {
+  regions: RegionSummary[];
 }
 
-const riskStats: RiskStat[] = [
-  { region: 'ภาคกลาง', status: 'normal', percentage: 85 },
-  { region: 'ภาคอีสาน', status: 'warning', percentage: 45 },
-  { region: 'ภาคเหนือ', status: 'normal', percentage: 72 },
-  { region: 'ภาคใต้', status: 'danger', percentage: 12 },
-];
+const regionLabels: Record<string, string> = {
+  central: 'ภาคกลาง',
+  north: 'ภาคเหนือ',
+  northeast: 'ภาคตะวันออกเฉียงเหนือ',
+  south: 'ภาคใต้',
+};
 
-export default function RiskDashboard() {
+function getRiskTone(summary: RegionSummary) {
+  if (summary.critical_count > 0) {
+    return 'danger';
+  }
+
+  if (summary.warning_count > 0) {
+    return 'warning';
+  }
+
+  return 'success';
+}
+
+export default function RiskDashboard({ regions }: RiskDashboardProps) {
   return (
-    <div className="risk-dashboard">
-      <h2 className="label" style={{ marginBottom: '16px' }}>วิเคราะห์ความเสี่ยงรายภูมิภาค</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-        {riskStats.map((stat) => (
-          <div key={stat.region} className="card">
-            <p className="label">{stat.region}</p>
-            <p className={`value status-${stat.status}`}>
-              {stat.status === 'normal' ? 'ปกติ' : stat.status === 'warning' ? 'เฝ้าระวัง' : 'วิกฤต'}
-            </p>
-            <div style={{ 
-              height: '4px', 
-              background: '#30363d', 
-              marginTop: '8px',
-              borderRadius: '2px',
-              overflow: 'hidden'
-            }}>
-              <div style={{ 
-                width: `${stat.percentage}%`, 
-                height: '100%', 
-                background: `var(--${stat.status === 'normal' ? 'success' : stat.status === 'warning' ? 'warning' : 'danger'}-color)` 
-              }}></div>
-            </div>
-            <p style={{ fontSize: '10px', marginTop: '4px', textAlign: 'right', color: '#8b949e' }}>
-              ระดับน้ำมันเฉลี่ย: {stat.percentage}%
-            </p>
-          </div>
-        ))}
+    <section className="panel intel-panel compact-panel">
+      <div className="panel-heading panel-heading-tight">
+        <div>
+          <p className="eyebrow">Regional Risk</p>
+          <h3 className="panel-title">วิเคราะห์ความเสี่ยงรายภูมิภาค</h3>
+        </div>
       </div>
-    </div>
+
+      <div className="risk-grid risk-grid-compact">
+        {regions.map((summary) => {
+          const tone = getRiskTone(summary);
+
+          return (
+            <article key={summary.region} className="risk-card">
+              <div className="risk-card-header">
+                <span className="eyebrow">{regionLabels[summary.region] || summary.region}</span>
+                <span className={`status-pill tone-${tone}`}>
+                  {tone === 'danger' ? 'วิกฤต' : tone === 'warning' ? 'เฝ้าระวัง' : 'เสถียร'}
+                </span>
+              </div>
+
+              <div className="risk-value">{summary.healthy_percent}%</div>
+
+              <div className="progress-rail">
+                <div className={`progress-fill tone-${tone}`} style={{ width: `${summary.healthy_percent}%` }} />
+              </div>
+
+              <div className="risk-meta">
+                <span>{summary.station_count} สถานี</span>
+                <span>เตือน {summary.warning_count}</span>
+                <span>วิกฤต {summary.critical_count}</span>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
