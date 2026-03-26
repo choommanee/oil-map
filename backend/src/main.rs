@@ -27,15 +27,31 @@ async fn main() {
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-    let pool = PgPoolOptions::new()
-        .max_connections(80)
-        .min_connections(5)
-        .acquire_timeout(Duration::from_secs(10))
-        .idle_timeout(Duration::from_secs(600))
-        .max_lifetime(Duration::from_secs(1800))
-        .connect(&database_url)
-        .await
-        .expect("Failed to connect to Postgres");
+    let mut pool = None;
+    for i in 1..=5 {
+        tracing::info!("Connection attempt {}/5 to database...", i);
+        match PgPoolOptions::new()
+            .max_connections(20) // Reduced from 80 for better stability
+            .min_connections(2)
+            .acquire_timeout(Duration::from_secs(10))
+            .idle_timeout(Duration::from_secs(600))
+            .max_lifetime(Duration::from_secs(1800))
+            .connect(&database_url)
+            .await {
+                Ok(p) => {
+                    pool = Some(p);
+                    break;
+                }
+                Err(e) => {
+                    tracing::error!("Database connection attempt {} failed: {}", i, e);
+                    if i < 5 {
+                        tracing::info!("Retrying in 5 seconds...");
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                    }
+                }
+            }
+    }
+    let pool = pool.expect("Failed to connect to Postgres after 5 attempts");
 
     // Run database migrations automatically on startup
     sqlx::migrate!("./migrations")
