@@ -994,52 +994,150 @@ pub async fn post_chat_message(
     Ok(Json(msg))
 }
 
+// ── Pure-Rust MVT encoder (no PostGIS required) ──────────────────────────────
+
+fn mvt_varint(mut v: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(10);
+    loop {
+        let b = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 { out.push(b); break; }
+        out.push(b | 0x80);
+    }
+    out
+}
+fn mvt_zigzag(v: i64) -> u64 { ((v << 1) ^ (v >> 63)) as u64 }
+
+/// Write protobuf field: wire-type 0 (varint)
+fn pb_u64(field: u32, v: u64) -> Vec<u8> {
+    let mut b = mvt_varint(((field as u64) << 3) | 0);
+    b.extend(mvt_varint(v)); b
+}
+/// Write protobuf field: wire-type 2 (length-delimited)
+fn pb_bytes(field: u32, data: &[u8]) -> Vec<u8> {
+    let mut b = mvt_varint(((field as u64) << 3) | 2);
+    b.extend(mvt_varint(data.len() as u64));
+    b.extend_from_slice(data); b
+}
+/// Packed repeated uint32
+fn pb_packed(field: u32, vals: &[u32]) -> Vec<u8> {
+    let mut data = Vec::new();
+    for &v in vals { data.extend(mvt_varint(v as u64)); }
+    pb_bytes(field, &data)
+}
+
+/// Convert tile (z,x,y) → (lat_min, lat_max, lon_min, lon_max)
+fn tile_to_bbox(z: i32, x: i32, y: i32) -> (f64, f64, f64, f64) {
+    use std::f64::consts::PI;
+    let n = (1u64 << (z as u32)) as f64;
+    let lon_min = x as f64 / n * 360.0 - 180.0;
+    let lon_max = (x as f64 + 1.0) / n * 360.0 - 180.0;
+    let lat_max = (PI * (1.0 - 2.0 * y as f64 / n)).sinh().atan().to_degrees();
+    let lat_min = (PI * (1.0 - 2.0 * (y as f64 + 1.0) / n)).sinh().atan().to_degrees();
+    (lat_min, lat_max, lon_min, lon_max)
+}
+
+/// Project lat/lng → tile pixel coords (0..4096)
+fn project(lat: f64, lon: f64, lat_min: f64, lat_max: f64, lon_min: f64, lon_max: f64) -> (i32, i32) {
+    let tx = ((lon - lon_min) / (lon_max - lon_min) * 4096.0) as i32;
+    let ty = ((1.0 - (lat - lat_min) / (lat_max - lat_min)) * 4096.0) as i32;
+    (tx.clamp(0, 4095), ty.clamp(0, 4095))
+}
+
+/// Build a complete MVT binary from station rows
+fn build_mvt(rows: &[(i64, String, String, f64, f64)],
+             lat_min: f64, lat_max: f64, lon_min: f64, lon_max: f64) -> Vec<u8> {
+    // Shared value pool (string_value = proto field 1)
+    let mut pool: Vec<Vec<u8>> = Vec::new();
+    let mut pool_idx: std::collections::HashMap<String, u32> = Default::default();
+    let mut intern = |pool: &mut Vec<Vec<u8>>,
+                      idx: &mut std::collections::HashMap<String, u32>,
+                      s: &str| -> u32 {
+        if let Some(&i) = idx.get(s) { return i; }
+        let i = pool.len() as u32;
+        pool.push(pb_bytes(1, s.as_bytes())); // string_value field 1
+        idx.insert(s.to_string(), i);
+        i
+    };
+
+    let mut features: Vec<Vec<u8>> = Vec::new();
+    for &(id, ref brand, ref status, lat, lon) in rows {
+        let (tx, ty) = project(lat, lon, lat_min, lat_max, lon_min, lon_max);
+        let id_s = id.to_string();
+        let vi = intern(&mut pool, &mut pool_idx, &id_s);
+        let vb = intern(&mut pool, &mut pool_idx, brand);
+        let vs = intern(&mut pool, &mut pool_idx, status);
+
+        // tags: [key_idx, val_idx, ...]  keys: 0=id 1=brand 2=status
+        let tags = [0u32, vi, 1, vb, 2, vs];
+        // POINT geometry: MoveTo(1) + zigzag(tx) + zigzag(ty)
+        let geom = [9u32, mvt_zigzag(tx as i64) as u32, mvt_zigzag(ty as i64) as u32];
+
+        let mut feat = Vec::new();
+        feat.extend(pb_u64(1, id as u64));   // id
+        feat.extend(pb_packed(2, &tags));     // tags
+        feat.extend(pb_u64(3, 1));            // type = POINT
+        feat.extend(pb_packed(4, &geom));     // geometry
+        features.push(feat);
+    }
+
+    let mut layer = Vec::new();
+    layer.extend(pb_u64(15, 2));                          // version = 2
+    layer.extend(pb_bytes(1, b"stations"));               // name
+    layer.extend(pb_u64(5, 4096));                        // extent
+    for key in &["id", "brand", "status"] {
+        layer.extend(pb_bytes(3, key.as_bytes()));        // keys
+    }
+    for v in &pool {
+        layer.extend(pb_bytes(4, v));                     // values
+    }
+    for f in &features {
+        layer.extend(pb_bytes(2, f));                     // features
+    }
+    pb_bytes(3, &layer) // Tile.layers field 3
+}
+
 /// GET /api/tiles/{z}/{x}/{y}
-/// Returns a Mapbox Vector Tile (MVT) binary for the given tile coordinate.
-/// PostGIS's ST_AsMVT + ST_TileEnvelope handles clipping and projection.
+/// Pure-Rust MVT encoder — no PostGIS dependency.
 pub async fn get_station_tile(
     State(state): State<AppState>,
     Path((z, x, y)): Path<(i32, i32, i32)>,
 ) -> Response<Body> {
-    let result = sqlx::query(
+    let (lat_min, lat_max, lon_min, lon_max) = tile_to_bbox(z, x, y);
+
+    let rows = sqlx::query_as::<_, (i64, String, String, f64, f64)>(
         r#"
-        SELECT ST_AsMVT(tile, 'stations', 4096, 'geom') AS mvt
-        FROM (
-            SELECT
-                s.id,
-                s.name,
-                s.brand,
-                COALESCE(
-                    CASE
-                        WHEN bool_or(fs.inventory_level = 'out')        THEN 'out'
-                        WHEN bool_or(fs.inventory_level = 'low')        THEN 'low'
-                        WHEN bool_or(fs.inventory_level = 'refilling')  THEN 'refilling'
-                        ELSE 'ok'
-                    END,
-                    'unknown'
-                ) AS status,
-                ST_AsMVTGeom(
-                    ST_Transform(s.geom, 3857),
-                    ST_TileEnvelope($1, $2, $3),
-                    4096, 256, true
-                ) AS geom
-            FROM stations s
-            LEFT JOIN fuel_status fs ON fs.station_id = s.id
-            WHERE s.geom && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
-            GROUP BY s.id, s.name, s.brand, s.geom
-        ) tile
+        SELECT
+            s.id,
+            s.brand,
+            COALESCE(
+                CASE
+                    WHEN bool_or(fs.inventory_level = 'out')       THEN 'out'
+                    WHEN bool_or(fs.inventory_level = 'low')       THEN 'low'
+                    WHEN bool_or(fs.inventory_level = 'refilling') THEN 'refilling'
+                    ELSE 'ok'
+                END,
+                'unknown'
+            ) AS status,
+            s.latitude,
+            s.longitude
+        FROM stations s
+        LEFT JOIN fuel_status fs ON fs.station_id = s.id
+        WHERE s.latitude  BETWEEN $1 AND $2
+          AND s.longitude BETWEEN $3 AND $4
+        GROUP BY s.id, s.brand, s.latitude, s.longitude
         "#,
     )
-    .bind(z)
-    .bind(x)
-    .bind(y)
-    .fetch_one(&state.pool)
+    .bind(lat_min)
+    .bind(lat_max)
+    .bind(lon_min)
+    .bind(lon_max)
+    .fetch_all(&state.pool)
     .await;
 
-    match result {
-        Ok(row) => {
-            let mvt: Option<Vec<u8>> = row.try_get("mvt").unwrap_or(None);
-            let bytes = mvt.unwrap_or_default();
+    match rows {
+        Ok(rows) => {
+            let bytes = build_mvt(&rows, lat_min, lat_max, lon_min, lon_max);
             Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/x-protobuf")
