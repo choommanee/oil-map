@@ -525,7 +525,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
         dragRotate={false}
         pitchWithRotate={false}
         style={{ width: '100%', height: '100%' }}
-        interactiveLayerIds={mapZoom >= 7 && mapZoom < 12 ? ['province-fill', 'mvt-logos'] : ['province-fill']}
+        interactiveLayerIds={mapZoom >= 5 && mapZoom < 12 ? ['province-fill', 'mvt-logos'] : ['province-fill']}
         onClick={handleMapClick}
         onMouseMove={handleProvinceHover}
         onMouseLeave={handleProvinceLeave}
@@ -747,22 +747,29 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
             minzoom={0}
             maxzoom={14}
           >
-            {/* Brand logo symbols — only visible zoom ≥ 7 (below that = province view, no clutter) */}
+            {/* Brand logo symbols
+                zoom < 7  → show ~30% (id % 10 < 3) to avoid national-view clutter
+                zoom ≥ 7  → show all with collision detection                      */}
             <Layer
               id="mvt-logos"
               type="symbol"
               source-layer="stations"
-              minzoom={7}
+              minzoom={5}
+              filter={['case',
+                ['>=', ['zoom'], 7], true,
+                ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
+                false,
+              ]}
               layout={{
                 'icon-image': ['concat', 'brand-', ['get', 'brand'], '-', ['get', 'status']],
-                'icon-size': ['interpolate', ['linear'], ['zoom'], 7, 0.28, 9, 0.42, 11, 0.62],
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 5, 0.2, 7, 0.3, 9, 0.42, 11, 0.62],
                 'icon-anchor': 'bottom',
                 'icon-allow-overlap': false,
                 'icon-ignore-placement': false,
                 'icon-padding': 6,
               }}
               paint={{
-                'icon-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0.7, 8, 1],
+                'icon-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0.6, 7, 0.8, 8, 1],
               }}
             />
           </Source>
