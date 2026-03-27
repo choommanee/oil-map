@@ -1,4 +1,3 @@
--- Auto-sync geom column when latitude/longitude is inserted or updated
 CREATE OR REPLACE FUNCTION sync_station_geom()
 RETURNS TRIGGER AS $$
 BEGIN
