@@ -571,22 +571,18 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
 
               const logoUrl = (brand !== 'Other' && BRAND_LOGOS[brand]) ? BRAND_LOGOS[brand] : null;
               const statusColor = MVT_STATUS_COLORS[status] ?? '#2fe08d';
-              // Teardrop canvas: circle + pointed tip below
-              const W = 56, H = 72;
-              const CX = W / 2, CR = 24, CY = CR + 3, TIP_Y = H - 4;
+              // Pin icon: circle head + triangular tail
+              const W = 52, H = 68;
+              const CX = W / 2;        // 26 — horizontal center
+              const HR = 21;           // head circle radius
+              const HY = HR + 3;       // head circle center Y = 24
+              const TIP_Y = H - 2;     // tip of tail = 66
+              const TAIL_W = 9;        // half-width of tail base
 
               const canvas = document.createElement('canvas');
               canvas.width = W; canvas.height = H;
               const ctx = canvas.getContext('2d');
               if (!ctx) return;
-
-              function teardropPath() {
-                // Arc: clockwise from 150° to 30° = top half of circle
-                ctx!.beginPath();
-                ctx!.arc(CX, CY, CR, (5 * Math.PI) / 6, Math.PI / 6, false);
-                ctx!.lineTo(CX, TIP_Y);
-                ctx!.closePath();
-              }
 
               function commit() {
                 if (!map || map.hasImage(id)) return;
@@ -597,46 +593,58 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
               function renderIcon(logoImg?: HTMLImageElement) {
                 ctx!.clearRect(0, 0, W, H);
 
-                // 1. Dark background fill
-                ctx!.globalAlpha = 0.9;
+                // 1. Dark circle head
+                ctx!.globalAlpha = 1;
                 ctx!.fillStyle = '#0d1117';
-                teardropPath();
+                ctx!.beginPath();
+                ctx!.arc(CX, HY, HR, 0, Math.PI * 2);
                 ctx!.fill();
 
-                // 2. Logo clipped to inner circle
-                ctx!.globalAlpha = 1;
+                // 2. Dark triangular tail
+                const tailBaseY = HY + HR - 4;
+                ctx!.beginPath();
+                ctx!.moveTo(CX - TAIL_W, tailBaseY);
+                ctx!.lineTo(CX, TIP_Y);
+                ctx!.lineTo(CX + TAIL_W, tailBaseY);
+                ctx!.closePath();
+                ctx!.fill();
+
+                // 3. Logo clipped to inner circle
                 if (logoImg) {
                   ctx!.save();
                   ctx!.beginPath();
-                  ctx!.arc(CX, CY, CR - 2, 0, Math.PI * 2);
+                  ctx!.arc(CX, HY, HR - 3, 0, Math.PI * 2);
                   ctx!.clip();
-                  ctx!.drawImage(logoImg, CX - (CR - 2), CY - (CR - 2), (CR - 2) * 2, (CR - 2) * 2);
+                  ctx!.globalAlpha = 1;
+                  ctx!.drawImage(logoImg, CX - (HR - 3), HY - (HR - 3), (HR - 3) * 2, (HR - 3) * 2);
                   ctx!.restore();
                 } else {
+                  ctx!.globalAlpha = 1;
                   ctx!.fillStyle = 'rgba(255,255,255,0.85)';
-                  ctx!.font = `bold 16px sans-serif`;
+                  ctx!.font = 'bold 14px sans-serif';
                   ctx!.textAlign = 'center';
                   ctx!.textBaseline = 'middle';
-                  ctx!.fillText(brand.slice(0, 2).toUpperCase(), CX, CY);
+                  ctx!.fillText(brand.slice(0, 2).toUpperCase(), CX, HY);
                 }
 
-                // 3. Status dot (top-right of circle)
-                const dotX = CX + CR * 0.64, dotY = CY - CR * 0.64;
+                // 4. Status dot (top-right of circle head)
+                const dotX = CX + HR * 0.65, dotY = HY - HR * 0.65;
+                ctx!.globalAlpha = 1;
                 ctx!.beginPath();
-                ctx!.arc(dotX, dotY, 6, 0, Math.PI * 2);
+                ctx!.arc(dotX, dotY, 5.5, 0, Math.PI * 2);
                 ctx!.fillStyle = statusColor;
                 ctx!.fill();
                 ctx!.strokeStyle = '#0d1117';
                 ctx!.lineWidth = 1.5;
                 ctx!.stroke();
 
-                // 4. Status border drawn LAST — crisp outline on top of everything
-                ctx!.globalAlpha = 0.92;
+                // 5. Colored ring around circle head — drawn last for crisp edge
+                ctx!.globalAlpha = 1;
                 ctx!.strokeStyle = statusColor;
                 ctx!.lineWidth = 2.5;
-                teardropPath();
+                ctx!.beginPath();
+                ctx!.arc(CX, HY, HR, 0, Math.PI * 2);
                 ctx!.stroke();
-                ctx!.globalAlpha = 1;
 
                 commit();
               }
