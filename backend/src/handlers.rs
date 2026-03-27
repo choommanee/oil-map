@@ -1045,7 +1045,7 @@ fn project(lat: f64, lon: f64, lat_min: f64, lat_max: f64, lon_min: f64, lon_max
 }
 
 /// Build a complete MVT binary from station rows
-fn build_mvt(rows: &[(i64, String, String, f64, f64)],
+fn build_mvt(rows: &[(i32, String, String, f64, f64)],
              lat_min: f64, lat_max: f64, lon_min: f64, lon_max: f64) -> Vec<u8> {
     // Shared value pool (string_value = proto field 1)
     let mut pool: Vec<Vec<u8>> = Vec::new();
@@ -1074,7 +1074,7 @@ fn build_mvt(rows: &[(i64, String, String, f64, f64)],
         let geom = [9u32, mvt_zigzag(tx as i64) as u32, mvt_zigzag(ty as i64) as u32];
 
         let mut feat = Vec::new();
-        feat.extend(pb_u64(1, id as u64));   // id
+        feat.extend(pb_u64(1, id as i64 as u64));   // id
         feat.extend(pb_packed(2, &tags));     // tags
         feat.extend(pb_u64(3, 1));            // type = POINT
         feat.extend(pb_packed(4, &geom));     // geometry
@@ -1105,7 +1105,7 @@ pub async fn get_station_tile(
 ) -> Response<Body> {
     let (lat_min, lat_max, lon_min, lon_max) = tile_to_bbox(z, x, y);
 
-    let rows = sqlx::query_as::<_, (i64, String, String, f64, f64)>(
+    let rows = sqlx::query_as::<_, (i32, String, String, f64, f64)>(
         r#"
         SELECT
             s.id,
