@@ -753,7 +753,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
           <Source
             id="stations-mvt"
             type="vector"
-            tiles={[`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'}/api/tiles/{z}/{x}/{y}`]}
+            tiles={[`${process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8080'}/api/tiles/{z}/{x}/{y}`]}
             minzoom={0}
             maxzoom={14}
           >
