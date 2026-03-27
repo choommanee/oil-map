@@ -6276,6 +6276,7 @@ html body>div:first-child {
 .cmd-status-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 10px 14px;
   background: rgba(7, 13, 21, 0.97);
@@ -6286,9 +6287,9 @@ html body>div:first-child {
 .cmd-status-segment {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex: 1;
-  min-width: 0;
+  min-width: 110px;
 }
 
 .cmd-status-dot {
