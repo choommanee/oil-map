@@ -593,8 +593,8 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
               function renderIcon(logoImg?: HTMLImageElement) {
                 ctx!.clearRect(0, 0, W, H);
 
-                // 1. Dark circle head
-                ctx!.globalAlpha = 1;
+                // 1. Dark circle head (semi-transparent)
+                ctx!.globalAlpha = 0.68;
                 ctx!.fillStyle = '#0d1117';
                 ctx!.beginPath();
                 ctx!.arc(CX, HY, HR, 0, Math.PI * 2);
@@ -639,12 +639,13 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
                 ctx!.stroke();
 
                 // 5. Colored ring around circle head — drawn last for crisp edge
-                ctx!.globalAlpha = 1;
+                ctx!.globalAlpha = 0.82;
                 ctx!.strokeStyle = statusColor;
                 ctx!.lineWidth = 2.5;
                 ctx!.beginPath();
                 ctx!.arc(CX, HY, HR, 0, Math.PI * 2);
                 ctx!.stroke();
+                ctx!.globalAlpha = 1;
 
                 commit();
               }

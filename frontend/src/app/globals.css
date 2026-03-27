@@ -4963,10 +4963,11 @@ html body>div:first-child {
   display: flex;
   flex-direction: column;
   align-items: center;
+  opacity: 0.72;
   filter:
     drop-shadow(0 4px 14px rgba(0,0,0,0.55))
     drop-shadow(0 0 7px var(--marker-glow, rgba(47,224,141,0.18)));
-  transition: transform 0.15s, filter 0.15s;
+  transition: transform 0.15s, filter 0.15s, opacity 0.15s;
 }
 
 /* Triangle tail pointing down */
@@ -4984,6 +4985,7 @@ html body>div:first-child {
 
 .map-station-marker:hover {
   transform: translateY(-4px) scale(1.09);
+  opacity: 1;
   filter:
     drop-shadow(0 8px 22px rgba(0,0,0,0.65))
     drop-shadow(0 0 14px var(--marker-glow, rgba(47,224,141,0.55)));
