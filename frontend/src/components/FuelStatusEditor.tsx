@@ -29,11 +29,10 @@ interface FuelStatusEditorProps {
 
 interface FuelEntry {
   status: FuelLevel;
-  liters: string;
   price: string;
 }
 
-const DEFAULT_ENTRY: FuelEntry = { status: 'high', liters: '10000', price: '32.90' };
+const DEFAULT_ENTRY: FuelEntry = { status: 'high', price: '32.90' };
 
 export default function FuelStatusEditor({ stationId, stationName }: FuelStatusEditorProps) {
   const [entries, setEntries] = useState<Record<string, FuelEntry>>(
@@ -47,8 +46,8 @@ export default function FuelStatusEditor({ stationId, stationName }: FuelStatusE
     setEntries((prev) => ({ ...prev, [fuelKey]: { ...prev[fuelKey], status } }));
   }
 
-  function setField(fuelKey: string, field: 'liters' | 'price', value: string) {
-    setEntries((prev) => ({ ...prev, [fuelKey]: { ...prev[fuelKey], [field]: value } }));
+  function setPrice(fuelKey: string, value: string) {
+    setEntries((prev) => ({ ...prev, [fuelKey]: { ...prev[fuelKey], price: value } }));
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -62,10 +61,8 @@ export default function FuelStatusEditor({ stationId, stationName }: FuelStatusE
         await updateStationFuel(stationId, {
           fuel_type: fuel.key,
           inventory_level: entry.status,
-          amount_liters: Number(entry.liters) || 0,
           price_per_liter: Number(entry.price) || 0,
           note,
-          updated_by: 'staff-dashboard',
         });
       }
       setResult({ ok: true, msg: 'อัปเดตข้อมูลสำเร็จ ✓' });
@@ -128,19 +125,8 @@ export default function FuelStatusEditor({ stationId, stationName }: FuelStatusE
                 ))}
               </div>
 
-              {/* Numeric inputs */}
+              {/* Price input only */}
               <div className="staff-fuel-inputs">
-                <label className="staff-input-wrap">
-                  <span className="staff-input-label">ปริมาณ (ลิตร)</span>
-                  <input
-                    className="staff-input"
-                    type="number"
-                    min="0"
-                    step="100"
-                    value={entry.liters}
-                    onChange={(e) => setField(fuel.key, 'liters', e.target.value)}
-                  />
-                </label>
                 <label className="staff-input-wrap">
                   <span className="staff-input-label">ราคา (บาท/ล.)</span>
                   <input
@@ -149,7 +135,7 @@ export default function FuelStatusEditor({ stationId, stationName }: FuelStatusE
                     min="0"
                     step="0.01"
                     value={entry.price}
-                    onChange={(e) => setField(fuel.key, 'price', e.target.value)}
+                    onChange={(e) => setPrice(fuel.key, e.target.value)}
                   />
                 </label>
               </div>
@@ -173,11 +159,23 @@ export default function FuelStatusEditor({ stationId, stationName }: FuelStatusE
         />
       </label>
 
-      {/* Submit */}
-      <button type="submit" className="staff-submit-btn" disabled={submitting}>
-        {submitting ? <RefreshCw size={16} className="cmd-map-loading-icon" /> : <Send size={16} />}
-        {submitting ? 'กำลังส่ง...' : 'ยืนยันการอัปเดตข้อมูล'}
-      </button>
+      {/* Submit — minimal icon button */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <button
+          type="submit"
+          className="staff-submit-btn-icon"
+          disabled={submitting}
+          title={submitting ? 'กำลังส่ง...' : 'บันทึก'}
+          aria-label={submitting ? 'กำลังส่ง...' : 'บันทึก'}
+        >
+          {submitting
+            ? <RefreshCw size={14} className="cmd-map-loading-icon" />
+            : <Send size={14} />}
+        </button>
+        <span className="staff-submit-label">
+          {submitting ? 'กำลังบันทึก...' : 'บันทึกสถานะ'}
+        </span>
+      </div>
 
       {result && (
         <div className={`staff-result ${result.ok ? 'staff-result-ok' : 'staff-result-err'}`}>

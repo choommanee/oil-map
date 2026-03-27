@@ -2,14 +2,15 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { AlertTriangle, Bell, Droplets, Fuel, Gauge, MapPin, RefreshCw, ShieldAlert, Truck, Zap } from 'lucide-react';
+import { AlertTriangle, Bell, Droplets, Fuel, Gauge, MapPin, RefreshCw, ShieldAlert, Truck, X, Zap } from 'lucide-react';
 import { getLiveFeed } from '@/lib/api';
 import { createRealtimeSubscription } from '@/lib/realtime';
 import { getBrandLogoUrl } from '@/lib/brandLogos';
 import NearbySearchPanel from '@/components/NearbySearchPanel';
 import FieldReportsFeed from '@/components/FieldReportsFeed';
 import OperationsChat from '@/components/OperationsChat';
-import type { FeedItem, MapResponse, NearbySearchResponse, NearbyStation, OverviewResponse, Station } from '@/lib/types';
+import type { FeedItem, MapResponse, NearbySearchResponse, NearbyStation, OverviewResponse, RegionSummary, Station } from '@/lib/types';
+import Link from 'next/link';
 
 const DashboardMap = dynamic(() => import('@/components/DashboardMap'), {
   ssr: false,
@@ -121,6 +122,70 @@ function SituationBadge({ alertCount }: { alertCount: number }) {
   return <span className="cmd-situation-badge badge-normal"><span className="cmd-sit-dot" />สถานการณ์ปกติ</span>;
 }
 
+/* ── District Summary Overlay ─────────────────────────────────────── */
+interface DistrictOverlayProps {
+  districts: RegionSummary[];
+  provinceSlug?: string;
+}
+
+function DistrictOverlay({ districts, provinceSlug }: DistrictOverlayProps) {
+  const [visible, setVisible] = useState(true);
+
+  if (districts.length === 0) return null;
+
+  function toneClass(pct: number) {
+    if (pct >= 65) return 'do-high';
+    if (pct >= 40) return 'do-medium';
+    return 'do-low';
+  }
+
+  return (
+    <div className="district-overlay">
+      <div className="district-overlay-header">
+        <span className="district-overlay-title">
+          <MapPin size={11} />
+          สถานะรายอำเภอ
+          <span style={{ opacity: 0.5, fontWeight: 400 }}>({districts.length})</span>
+        </span>
+        <button
+          type="button"
+          className="district-overlay-toggle"
+          onClick={() => setVisible((v) => !v)}
+          title={visible ? 'ซ่อน' : 'แสดง'}
+        >
+          {visible ? <X size={11} /> : <span style={{ fontSize: '0.65rem' }}>แสดง</span>}
+        </button>
+      </div>
+
+      {visible && (
+        <div className="district-overlay-grid">
+          {districts.map((d) => {
+            const cls = toneClass(d.healthy_percent);
+            const href =
+              provinceSlug && d.area_slug
+                ? `/province/${provinceSlug}/district/${d.area_slug}`
+                : undefined;
+            const inner = (
+              <div className={`district-overlay-card ${cls}`}>
+                <span className="do-name">{d.region}</span>
+                <span className="do-pct">{d.healthy_percent}%</span>
+                <div className="do-bar-track">
+                  <div className="do-bar-fill" style={{ width: `${d.healthy_percent}%` }} />
+                </div>
+              </div>
+            );
+            return href ? (
+              <Link key={d.region} href={href} className="do-link">{inner}</Link>
+            ) : (
+              <div key={d.region}>{inner}</div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ── Main Dashboard ──────────────────────────────────────────────── */
 export default function OverviewDashboard({ overview, map, feed }: OverviewDashboardProps) {
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
@@ -128,6 +193,15 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
   const [activeFilter, setActiveFilter] = useState('all');
   const [searchOrigin, setSearchOrigin] = useState<{ lat: number; lng: number; radiusKm: number } | null>(null);
   const [nearbyStations, setNearbyStations] = useState<NearbyStation[]>([]);
+  const [openPanels, setOpenPanels] = useState<Set<string>>(new Set(['summary', 'live', 'search']));
+
+  function togglePanel(key: string) {
+    setOpenPanels((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
   const feedLock = useRef(false);
   const lastFetch = useRef(0);
   const jitterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -194,8 +268,13 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
     total:     map.stations.length,
   }), [map.stations]);
 
+  const panelSummaryOpen = openPanels.has('summary');
+  const panelLiveOpen    = openPanels.has('live');
+  const panelChatOpen    = openPanels.has('chat');
+  const panelSearchOpen  = openPanels.has('search');
+
   return (
-    <div className="cmd-shell">
+    <div className="cmd-shell cmd-shell--fullmap">
 
       {/* ── HEADER ── */}
       <header className="cmd-header">
@@ -230,205 +309,166 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
         </div>
       </header>
 
-      {/* ── KPI STRIP ── */}
-      <section className="cmd-kpi-strip">
-        {overview.kpis.slice(0, 4).map((kpi, i) => {
-          const Icon = KPI_ICONS[i] ?? Fuel;
-          const toneMap: Record<string, string> = {
-            success: 'kpi-success',
-            warning: 'kpi-warning',
-            danger:  'kpi-danger',
-            info:    'kpi-info',
-          };
-          return (
-            <div key={kpi.label} className={`cmd-kpi-card ${toneMap[kpi.tone ?? ''] ?? 'kpi-neutral'}`}>
-              <div className="cmd-kpi-icon-wrap">
-                <Icon size={22} />
-              </div>
-              <div className="cmd-kpi-body">
-                <div className="cmd-kpi-label">{kpi.label}</div>
-                <div className="cmd-kpi-value">{kpi.value}</div>
-                {kpi.helper && <div className="cmd-kpi-helper">{kpi.helper}</div>}
-              </div>
+      {/* ── PANEL TOGGLE TOOLBAR ── */}
+      <div className="cmd-panel-toolbar">
+        <button
+          type="button"
+          className={`cmd-ptb-btn ${panelSummaryOpen ? 'cmd-ptb-btn--on' : ''}`}
+          onClick={() => togglePanel('summary')}
+          title="สรุปภาพรวม"
+        >
+          <Gauge size={14} />
+          <span>สรุป</span>
+          {alertCount > 0 && <span className="cmd-ptb-badge">{alertCount}</span>}
+        </button>
+        <button
+          type="button"
+          className={`cmd-ptb-btn ${panelLiveOpen ? 'cmd-ptb-btn--on' : ''}`}
+          onClick={() => togglePanel('live')}
+          title="รายงานสนาม"
+        >
+          <Droplets size={14} />
+          <span>Live</span>
+          {criticalFeedCount > 0 && <span className="cmd-ptb-badge cmd-ptb-badge--warn">{criticalFeedCount}</span>}
+        </button>
+        <button
+          type="button"
+          className={`cmd-ptb-btn ${panelChatOpen ? 'cmd-ptb-btn--on' : ''}`}
+          onClick={() => togglePanel('chat')}
+          title="แชทปฏิบัติการ"
+        >
+          <Bell size={14} />
+          <span>แชท</span>
+        </button>
+        <button
+          type="button"
+          className={`cmd-ptb-btn ${panelSearchOpen ? 'cmd-ptb-btn--on' : ''}`}
+          onClick={() => togglePanel('search')}
+          title="ค้นหาปั้มใกล้เคียง"
+        >
+          <MapPin size={14} />
+          <span>ค้นหา</span>
+        </button>
+      </div>
+
+      {/* ── FULL MAP AREA ── */}
+      <div className="cmd-fullmap-wrap">
+
+        {/* Map */}
+        <div className="cmd-map-wrap" style={{ position: 'relative', width: '100%', height: '100%' }}>
+
+          {/* Filter chips floating on map */}
+          <div className="cmd-map-filter-float">
+            {FUEL_FILTERS.map((f) => {
+              const count = f.key === 'all' ? map.stations.length : map.stations.filter((s) => s.status === f.key).length;
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => setActiveFilter(f.key)}
+                  className={`cmd-filter-chip ${activeFilter === f.key ? 'active' : ''}`}
+                  style={{ '--chip-color': f.color } as React.CSSProperties}
+                >
+                  <span className="cmd-filter-dot" style={{ background: f.color }} />
+                  <span className="cmd-filter-label">{f.label}</span>
+                  <span className="cmd-filter-count">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <DashboardMap
+            stations={displayStations}
+            scope={map.scope}
+            onSelectStation={setSelectedStation}
+            searchOrigin={searchOrigin}
+            useViewportLoad={map.scope.level === 'national' || map.scope.level === 'region'}
+          />
+          {(map.scope.level === 'province' || map.scope.level === 'district') && (
+            <DistrictOverlay districts={overview.region_summaries} provinceSlug={map.scope.province_slug} />
+          )}
+        </div>
+
+        {/* ── Floating: Summary panel ── */}
+        {panelSummaryOpen && (
+          <div className="cmd-float-panel cmd-float-panel--summary">
+            <div className="cmd-float-panel-head">
+              <Gauge size={13} /><span>สรุปภาพรวม</span>
+              <button type="button" className="cmd-float-close" onClick={() => togglePanel('summary')}><X size={13} /></button>
             </div>
-          );
-        })}
-      </section>
-
-      {/* ── BRAND DISTRIBUTION STRIP ── */}
-      <BrandStrip stations={map.stations} />
-
-      {/* ── MAIN GRID ── */}
-      <div className="cmd-main-grid">
-
-        {/* MAP COLUMN */}
-        <div className="cmd-map-col">
-          <div className="cmd-map-bar">
-            <p className="cmd-map-bar-label">
-              <MapPin size={12} />
-              <span>แผนที่ Real-time</span>
-            </p>
-            <div className="cmd-map-filters">
-              {FUEL_FILTERS.map((f) => {
-                const count = f.key === 'all'
-                  ? map.stations.length
-                  : map.stations.filter((s) => s.status === f.key).length;
+            <div className="cmd-float-kpis">
+              {overview.kpis.slice(0, 4).map((kpi, i) => {
+                const Icon = KPI_ICONS[i] ?? Fuel;
+                const toneMap: Record<string, string> = { success: 'kpi-success', warning: 'kpi-warning', danger: 'kpi-danger', info: 'kpi-info' };
                 return (
-                  <button
-                    key={f.key}
-                    type="button"
-                    onClick={() => setActiveFilter(f.key)}
-                    className={`cmd-filter-chip ${activeFilter === f.key ? 'active' : ''}`}
-                    style={{ '--chip-color': f.color } as React.CSSProperties}
-                    title={f.label}
-                  >
-                    <span className="cmd-filter-dot" style={{ background: f.color }} />
-                    <span className="cmd-filter-label">{f.label}</span>
-                    <span className="cmd-filter-count">{count}</span>
-                  </button>
+                  <div key={kpi.label} className={`cmd-kpi-card ${toneMap[kpi.tone ?? ''] ?? 'kpi-neutral'}`}>
+                    <div className="cmd-kpi-icon-wrap"><Icon size={20} /></div>
+                    <div className="cmd-kpi-body">
+                      <div className="cmd-kpi-label">{kpi.label}</div>
+                      <div className="cmd-kpi-value">{kpi.value}</div>
+                    </div>
+                  </div>
                 );
               })}
             </div>
-          </div>
-
-          <div className="cmd-map-wrap">
-            <DashboardMap
-              stations={displayStations}
-              scope={map.scope}
-              onSelectStation={setSelectedStation}
-              searchOrigin={searchOrigin}
-            />
-            {selectedStation && (
-              <div className="cmd-station-popup">
-                <div className="cmd-station-popup-head">
-                  <strong>{selectedStation.name}</strong>
-                  <span className={`status-pill status-${selectedStation.status}`}>{selectedStation.status}</span>
-                </div>
-                <p className="cmd-station-popup-addr">{selectedStation.address}</p>
-                <div className="cmd-station-popup-fuels">
-                  {selectedStation.fuels.map((fuel) => (
-                    <span key={fuel.fuel_type} className={`cmd-fuel-tag status-${fuel.status}`}>
-                      {fuel.fuel_type}
-                    </span>
-                  ))}
-                </div>
-                {selectedStation.distance_km ? (
-                  <p className="cmd-station-popup-dist">{selectedStation.distance_km.toFixed(1)} กม.</p>
-                ) : null}
+            <BrandStrip stations={map.stations} />
+            <div className="cmd-status-bar">
+              {(['high','low','out','refilling'] as const).map((k) => {
+                const dotCls = k === 'high' ? 'csb-green' : k === 'low' ? 'csb-yellow' : k === 'out' ? 'csb-red' : 'csb-cyan';
+                const fillCls = k === 'high' ? 'csf-green' : k === 'low' ? 'csf-yellow' : k === 'out' ? 'csf-red' : 'csf-cyan';
+                const label = k === 'high' ? 'ปกติ' : k === 'low' ? 'ใกล้หมด' : k === 'out' ? 'หมด' : 'กำลังเติม';
+                const val = statusCounts[k];
+                return (
+                  <div key={k} className="cmd-status-segment">
+                    <span className={`cmd-status-dot ${dotCls}`} />
+                    <span className="cmd-status-label">{label}</span>
+                    <span className="cmd-status-val">{val}</span>
+                    <div className="cmd-status-track">
+                      <div className={`cmd-status-fill ${fillCls}`} style={{ width: `${Math.round((val / Math.max(statusCounts.total, 1)) * 100)}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="cmd-status-total">
+                <Gauge size={14} />
+                <span className="cmd-status-total-num">{statusCounts.total}</span>
+                <span className="cmd-status-total-label">สถานีทั้งหมด</span>
               </div>
-            )}
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* RIGHT COLUMN */}
-        <div className="cmd-right-col" style={{ overflowY: 'auto' }}>
-          <FieldReportsFeed feed={liveFeed} scope={map.scope} />
-          <OperationsChat scope={map.scope} />
-        </div>
-      </div>
-
-      {/* ── STATUS BAR ── */}
-      <div className="cmd-status-bar">
-        <div className="cmd-status-segment">
-          <span className="cmd-status-dot csb-green" />
-          <span className="cmd-status-label">ปกติ</span>
-          <span className="cmd-status-val">{statusCounts.high}</span>
-          <div className="cmd-status-track">
-            <div
-              className="cmd-status-fill csf-green"
-              style={{ width: `${Math.round((statusCounts.high / Math.max(statusCounts.total, 1)) * 100)}%` }}
-            />
+        {/* ── Floating: Live feed ── */}
+        {panelLiveOpen && (
+          <div className="cmd-float-panel cmd-float-panel--live">
+            <button type="button" className="cmd-float-close cmd-float-close--abs" onClick={() => togglePanel('live')}><X size={13} /></button>
+            <FieldReportsFeed feed={sortedFeed} scope={map.scope} />
           </div>
-        </div>
-        <div className="cmd-status-segment">
-          <span className="cmd-status-dot csb-yellow" />
-          <span className="cmd-status-label">ใกล้หมด</span>
-          <span className="cmd-status-val">{statusCounts.low}</span>
-          <div className="cmd-status-track">
-            <div
-              className="cmd-status-fill csf-yellow"
-              style={{ width: `${Math.round((statusCounts.low / Math.max(statusCounts.total, 1)) * 100)}%` }}
+        )}
+
+        {/* ── Floating: Chat ── */}
+        {panelChatOpen && (
+          <div className="cmd-float-panel cmd-float-panel--chat">
+            <button type="button" className="cmd-float-close cmd-float-close--abs" onClick={() => togglePanel('chat')}><X size={13} /></button>
+            <OperationsChat scope={map.scope} />
+          </div>
+        )}
+
+        {/* ── Floating: Nearby Search ── */}
+        {panelSearchOpen && (
+          <div className="cmd-float-panel cmd-float-panel--search">
+            <div className="cmd-float-panel-head">
+              <MapPin size={13} /><span>ค้นหาปั้มใกล้เคียง</span>
+              <button type="button" className="cmd-float-close" onClick={() => togglePanel('search')}><X size={13} /></button>
+            </div>
+            <NearbySearchPanel
+              onResult={(stations, origin) => {
+                setNearbyStations(stations);
+                setSearchOrigin(origin);
+              }}
             />
           </div>
-        </div>
-        <div className="cmd-status-segment">
-          <span className="cmd-status-dot csb-red" />
-          <span className="cmd-status-label">หมด</span>
-          <span className="cmd-status-val">{statusCounts.out}</span>
-          <div className="cmd-status-track">
-            <div
-              className="cmd-status-fill csf-red"
-              style={{ width: `${Math.round((statusCounts.out / Math.max(statusCounts.total, 1)) * 100)}%` }}
-            />
-          </div>
-        </div>
-        <div className="cmd-status-segment">
-          <span className="cmd-status-dot csb-cyan" />
-          <span className="cmd-status-label">กำลังเติม</span>
-          <span className="cmd-status-val">{statusCounts.refilling}</span>
-          <div className="cmd-status-track">
-            <div
-              className="cmd-status-fill csf-cyan"
-              style={{ width: `${Math.round((statusCounts.refilling / Math.max(statusCounts.total, 1)) * 100)}%` }}
-            />
-          </div>
-        </div>
-        <div className="cmd-status-total">
-          <Gauge size={14} />
-          <span className="cmd-status-total-num">{statusCounts.total}</span>
-          <span className="cmd-status-total-label">สถานีทั้งหมด</span>
-        </div>
-      </div>
-
-      {/* ── BOTTOM GRID ── */}
-      <div className="cmd-bottom-grid">
-
-        {/* Nearby Search */}
-        <NearbySearchPanel
-          onResult={(stations, origin) => {
-            setNearbyStations(stations);
-            setSearchOrigin(origin);
-          }}
-        />
-
-        {/* Governor Command Center */}
-        <div className="cmd-panel cmd-command-center">
-          <div className="cmd-command-head">
-            <Zap size={14} />
-            <span>GOVERNOR COMMAND</span>
-            <span className="cmd-command-sub">ศูนย์สั่งการ</span>
-          </div>
-          <div className="cmd-command-grid">
-            <button className="cmd-action-btn btn-danger" type="button">
-              <ShieldAlert size={15} />
-              <div>
-                <span className="btn-label">จำกัดการเติม</span>
-                <span className="btn-sub">ตั้งวงเงิน/คัน</span>
-              </div>
-            </button>
-            <button className="cmd-action-btn btn-warning" type="button">
-              <Bell size={15} />
-              <div>
-                <span className="btn-label">แจ้งเตือน</span>
-                <span className="btn-sub">ส่งทุกช่องทาง</span>
-              </div>
-            </button>
-            <button className="cmd-action-btn btn-blue" type="button">
-              <Truck size={15} />
-              <div>
-                <span className="btn-label">ส่งรถด่วน</span>
-                <span className="btn-sub">จัดสรรรถ</span>
-              </div>
-            </button>
-            <button className="cmd-action-btn btn-teal" type="button">
-              <Fuel size={15} />
-              <div>
-                <span className="btn-label">เปิดสำรอง</span>
-                <span className="btn-sub">น้ำมันสำรอง</span>
-              </div>
-            </button>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -59,6 +59,7 @@ export interface OverviewKpi extends SummaryCard {}
 
 export interface RegionSummary {
   region: string;
+  area_slug?: string;
   station_count: number;
   healthy_percent: number;
   warning_count: number;
@@ -153,14 +154,14 @@ export interface AuthResponse {
     email: string;
     role: string;
     station_id?: number;
+    province_slug?: string;
   };
 }
 
 export interface StationUpdatePayload {
   fuel_type: FuelType;
   inventory_level: FuelLevel;
-  amount_liters: number;
   price_per_liter: number;
   note?: string;
-  updated_by?: string;
+  // amount_liters and updated_by removed: handled server-side
 }

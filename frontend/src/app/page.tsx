@@ -14,7 +14,7 @@ const DEFAULT_RADIUS_KM = 35;
 export default async function HomePage() {
   const [overview, map, feed, nearby, oilPrices] = await Promise.all([
     getOverview({ level: 'national' }),
-    getMap({}),
+    getMap({ limit: 500 }),
     getLiveFeed(),
     searchNearbyStations({
       lat: DEFAULT_LAT,

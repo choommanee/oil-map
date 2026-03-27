@@ -5,4 +5,5 @@ use sqlx::PgPool;
 pub struct AppState {
     pub pool: PgPool,
     pub realtime_hub: RealtimeHub,
+    pub jwt_secret: String,
 }

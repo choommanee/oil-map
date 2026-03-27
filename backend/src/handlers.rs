@@ -1,11 +1,14 @@
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::Response,
     Json,
 };
-use chrono::Utc;
+use axum::body::Body;
+use chrono::{Duration, Utc};
 use sqlx::Row;
 
+use crate::auth::AuthClaims;
 use crate::models::{
     build_station_summaries, brand_key, ApiMessage, AppUser, AreaBreakdown, AuthResponse, AuthUser,
     ChatMessage, ChatQuery, DistrictDetailResponse, DistrictSummary, FeedItem, FeedRow, FuelMixRow,
@@ -61,6 +64,12 @@ fn build_station_filter_clause(filters: &StationFilterQuery) -> String {
     if let (Some(lat), Some(lng), Some(radius_km)) = (filters.lat, filters.lng, filters.radius_km) {
         clauses.push(format!(
             "(6371 * acos(LEAST(1, GREATEST(-1, cos(radians({lat})) * cos(radians(s.latitude)) * cos(radians(s.longitude) - radians({lng})) + sin(radians({lat})) * sin(radians(s.latitude)))))) <= {radius_km}"
+        ));
+    }
+    if let Some(name) = sanitize_scope(&filters.name) {
+        let safe = name.replace('\'', "''");
+        clauses.push(format!(
+            "(s.name ILIKE '%{safe}%' OR s.brand ILIKE '%{safe}%' OR p.name ILIKE '%{safe}%' OR d.name ILIKE '%{safe}%')"
         ));
     }
 
@@ -173,8 +182,12 @@ pub async fn get_stations(
 ) -> Result<Json<Vec<StationSummary>>, (StatusCode, Json<ApiMessage>)> {
     let pool = &state.pool;
     let clause = build_station_filter_clause(&filters);
+    let limit_clause = match filters.limit {
+        Some(n) if n > 0 => format!(" LIMIT {}", n.min(5000)),
+        _ => String::new(),
+    };
     let sql = format!(
-        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} ORDER BY s.last_updated DESC, s.id ASC"
+        "SELECT s.id AS station_id, s.name AS station_name, s.brand, r.name AS region, p.name AS province, p.slug AS province_slug, d.name AS district, d.slug AS district_slug, s.address, s.latitude, s.longitude, s.last_updated, fs.fuel_type, fs.inventory_level, fs.amount_liters, fs.price_per_liter FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} ORDER BY s.last_updated DESC, s.id ASC{limit_clause}"
     );
 
     let rows = sqlx::query_as::<_, StationMapRow>(&sql)
@@ -187,8 +200,12 @@ pub async fn get_stations(
 
 pub async fn get_map_data(
     state: State<AppState>,
-    Query(filters): Query<StationFilterQuery>,
+    Query(mut filters): Query<StationFilterQuery>,
 ) -> Result<Json<Vec<StationSummary>>, (StatusCode, Json<ApiMessage>)> {
+    // Cap at 500 for homepage overview — MVT tiles handle full station rendering
+    if filters.limit.is_none() {
+        filters.limit = Some(500);
+    }
     get_stations(state, Query(filters)).await
 }
 
@@ -201,7 +218,7 @@ pub async fn get_viewport_stations(
     let south = sanitize_float(query.south);
     let east = sanitize_float(query.east);
     let west = sanitize_float(query.west);
-    let limit = sanitize_limit(query.limit, 60, 200);
+    let limit = sanitize_limit(query.limit, 200, 2000);
     let lat = (north + south) / 2.0;
     let lng = (east + west) / 2.0;
 
@@ -442,10 +459,10 @@ pub async fn get_overview(
             "SELECT p.name AS area_name, p.slug AS area_slug, COUNT(DISTINCT s.id) AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY p.name, p.slug ORDER BY stations_count DESC, p.name ASC"
         ),
         "province" => format!(
-            "SELECT d.name AS area_name, d.slug AS area_slug, COUNT(DISTINCT s.id) AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY d.name, d.slug ORDER BY stations_count DESC, d.name ASC"
+            "SELECT d.name AS area_name, d.slug AS area_slug, COUNT(DISTINCT s.id) AS stations_count, COUNT(fs.id) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(fs.id) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM districts d JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id LEFT JOIN stations s ON s.district_id = d.id LEFT JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY d.name, d.slug ORDER BY stations_count DESC, d.name ASC"
         ),
         "district" => format!(
-            "SELECT s.name AS area_name, CAST(s.id AS TEXT) AS area_slug, 1 AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY s.id, s.name ORDER BY updates_last_24h DESC, s.name ASC"
+            "SELECT s.name AS area_name, CAST(s.id AS TEXT) AS area_slug, 1::BIGINT AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY s.id, s.name ORDER BY updates_last_24h DESC, s.name ASC"
         ),
         _ => format!(
             "SELECT r.name AS area_name, LOWER(REPLACE(r.name, ' ', '-')) AS area_slug, COUNT(DISTINCT s.id) AS stations_count, COUNT(*) FILTER (WHERE fs.inventory_level IN ('low', 'out')) AS low_or_out_count, COUNT(*) FILTER (WHERE fs.last_updated >= NOW() - INTERVAL '24 HOURS') AS updates_last_24h FROM stations s JOIN districts d ON s.district_id = d.id JOIN provinces p ON d.province_id = p.id JOIN regions r ON p.region_id = r.id JOIN fuel_status fs ON fs.station_id = s.id WHERE {clause} GROUP BY r.name ORDER BY stations_count DESC, r.name ASC"
@@ -638,30 +655,45 @@ pub async fn register(
         return Err((StatusCode::CONFLICT, Json(ApiMessage { message: "email already exists".to_string() })));
     }
 
-    let role = payload.role.clone().unwrap_or_else(|| "staff".to_string());
+    let password = payload.password.clone();
+    let hashed = tokio::task::spawn_blocking(move || bcrypt::hash(password, bcrypt::DEFAULT_COST))
+        .await
+        .map_err(|_| internal_error(sqlx::Error::RowNotFound))?
+        .map_err(|_| internal_error(sqlx::Error::RowNotFound))?;
 
     let user = sqlx::query_as::<_, AppUser>(
-        "INSERT INTO app_users (name, email, password, role, station_id) VALUES ($1, $2, $3, $4, $5) RETURNING id, name, email, password, role, station_id, created_at"
+        "INSERT INTO app_users (name, email, password, role, station_id) VALUES ($1, $2, $3, 'staff', $4) RETURNING id, name, email, password, role, station_id, province_slug, created_at"
     )
     .bind(&payload.name)
     .bind(&payload.email)
-    .bind(&payload.password)
-    .bind(&role)
+    .bind(&hashed)
     .bind(payload.station_id)
     .fetch_one(pool)
     .await
     .map_err(internal_error)?;
 
+    let claims = crate::auth::Claims {
+        sub: user.id,
+        name: user.name.clone(),
+        role: user.role.clone(),
+        station_id: user.station_id,
+        province_slug: user.province_slug.clone(),
+        exp: (Utc::now() + Duration::hours(24)).timestamp() as usize,
+    };
+    let token = crate::auth::encode_token(&claims, &state.jwt_secret)
+        .map_err(|_| internal_error(sqlx::Error::RowNotFound))?;
+
     Ok((
         StatusCode::CREATED,
         Json(AuthResponse {
-            token: format!("demo-token-{}-{}", user.id, user.role),
+            token,
             user: AuthUser {
                 id: user.id,
                 name: user.name,
                 email: user.email,
                 role: user.role,
                 station_id: user.station_id,
+                province_slug: user.province_slug,
             },
         }),
     ))
@@ -673,42 +705,88 @@ pub async fn login(
 ) -> Result<Json<AuthResponse>, (StatusCode, Json<ApiMessage>)> {
     let pool = &state.pool;
     let user = sqlx::query_as::<_, AppUser>(
-        "SELECT id, name, email, password, role, station_id, created_at FROM app_users WHERE email = $1 AND password = $2"
+        "SELECT id, name, email, password, role, station_id, province_slug, created_at FROM app_users WHERE email = $1"
     )
     .bind(&payload.email)
-    .bind(&payload.password)
     .fetch_optional(pool)
     .await
     .map_err(internal_error)?;
 
-    let user = user.ok_or_else(|| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiMessage {
-                message: "invalid credentials".to_string(),
-            }),
-        )
-    })?;
+    let invalid = || (StatusCode::UNAUTHORIZED, Json(ApiMessage { message: "invalid credentials".to_string() }));
+
+    let user = user.ok_or_else(invalid)?;
+
+    let password_input = payload.password.clone();
+    let hash = user.password.clone();
+    let valid = tokio::task::spawn_blocking(move || bcrypt::verify(password_input, &hash))
+        .await
+        .map_err(|_| invalid())?
+        .unwrap_or(false);
+
+    if !valid {
+        return Err(invalid());
+    }
+
+    let claims = crate::auth::Claims {
+        sub: user.id,
+        name: user.name.clone(),
+        role: user.role.clone(),
+        station_id: user.station_id,
+        province_slug: user.province_slug.clone(),
+        exp: (Utc::now() + Duration::hours(24)).timestamp() as usize,
+    };
+    let token = crate::auth::encode_token(&claims, &state.jwt_secret)
+        .map_err(|_| invalid())?;
 
     Ok(Json(AuthResponse {
-        token: format!("demo-token-{}-{}", user.id, user.role),
+        token,
         user: AuthUser {
             id: user.id,
             name: user.name,
             email: user.email,
             role: user.role,
             station_id: user.station_id,
+            province_slug: user.province_slug,
         },
     }))
 }
 
 pub async fn update_fuel_status(
+    AuthClaims(claims): AuthClaims,
     State(state): State<AppState>,
     Path(id): Path<i32>,
     Json(payload): Json<StationUpdateRequest>,
 ) -> Result<Json<ApiMessage>, (StatusCode, Json<ApiMessage>)> {
     let pool = &state.pool;
     let realtime = &state.realtime_hub;
+
+    // Scope enforcement
+    let allowed = match claims.role.as_str() {
+        "admin" => true,
+        "province_manager" => {
+            let station_province = sqlx::query_scalar::<_, String>(
+                "SELECT p.slug FROM stations s \
+                 JOIN districts d ON s.district_id = d.id \
+                 JOIN provinces p ON d.province_id = p.id \
+                 WHERE s.id = $1"
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(internal_error)?;
+            station_province.as_deref() == claims.province_slug.as_deref()
+        }
+        "staff" => claims.station_id == Some(id),
+        _ => false,
+    };
+
+    if !allowed {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiMessage { message: "unauthorized for this station".to_string() }),
+        ));
+    }
+
     let valid_level = matches!(
         payload.inventory_level.as_str(),
         "high" | "medium" | "low" | "out" | "refilling"
@@ -732,15 +810,17 @@ pub async fn update_fuel_status(
         return Err(not_found("station not found"));
     }
 
+    let amount_liters = payload.amount_liters.unwrap_or(0.0);
+
     sqlx::query(
         "INSERT INTO fuel_status (station_id, fuel_type, inventory_level, amount_liters, price_per_liter, updated_by, note, last_updated) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) ON CONFLICT (station_id, fuel_type) DO UPDATE SET inventory_level = EXCLUDED.inventory_level, amount_liters = EXCLUDED.amount_liters, price_per_liter = EXCLUDED.price_per_liter, updated_by = EXCLUDED.updated_by, note = EXCLUDED.note, last_updated = NOW()"
     )
     .bind(id)
     .bind(&payload.fuel_type)
     .bind(&payload.inventory_level)
-    .bind(payload.amount_liters)
+    .bind(amount_liters)
     .bind(payload.price_per_liter)
-    .bind(payload.updated_by.clone().unwrap_or_else(|| "staff".to_string()))
+    .bind(&claims.name)
     .bind(payload.note.clone().unwrap_or_else(|| "manual dashboard update".to_string()))
     .execute(pool)
     .await
@@ -756,9 +836,8 @@ pub async fn update_fuel_status(
         "station_id": id,
         "fuel_type": payload.fuel_type,
         "inventory_level": payload.inventory_level,
-        "amount_liters": payload.amount_liters,
         "price_per_liter": payload.price_per_liter,
-        "updated_by": payload.updated_by,
+        "updated_by": claims.name,
         "note": payload.note,
     })
     .to_string();
@@ -913,4 +992,67 @@ pub async fn post_chat_message(
         .await;
 
     Ok(Json(msg))
+}
+
+/// GET /api/tiles/{z}/{x}/{y}
+/// Returns a Mapbox Vector Tile (MVT) binary for the given tile coordinate.
+/// PostGIS's ST_AsMVT + ST_TileEnvelope handles clipping and projection.
+pub async fn get_station_tile(
+    State(state): State<AppState>,
+    Path((z, x, y)): Path<(i32, i32, i32)>,
+) -> Response<Body> {
+    let result = sqlx::query(
+        r#"
+        SELECT ST_AsMVT(tile, 'stations', 4096, 'geom') AS mvt
+        FROM (
+            SELECT
+                s.id,
+                s.name,
+                s.brand,
+                COALESCE(
+                    CASE
+                        WHEN bool_or(fs.inventory_level = 'out')        THEN 'out'
+                        WHEN bool_or(fs.inventory_level = 'low')        THEN 'low'
+                        WHEN bool_or(fs.inventory_level = 'refilling')  THEN 'refilling'
+                        ELSE 'ok'
+                    END,
+                    'unknown'
+                ) AS status,
+                ST_AsMVTGeom(
+                    ST_Transform(s.geom, 3857),
+                    ST_TileEnvelope($1, $2, $3),
+                    4096, 256, true
+                ) AS geom
+            FROM stations s
+            LEFT JOIN fuel_status fs ON fs.station_id = s.id
+            WHERE s.geom && ST_Transform(ST_TileEnvelope($1, $2, $3), 4326)
+            GROUP BY s.id, s.name, s.brand, s.geom
+        ) tile
+        "#,
+    )
+    .bind(z)
+    .bind(x)
+    .bind(y)
+    .fetch_one(&state.pool)
+    .await;
+
+    match result {
+        Ok(row) => {
+            let mvt: Option<Vec<u8>> = row.try_get("mvt").unwrap_or(None);
+            let bytes = mvt.unwrap_or_default();
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/x-protobuf")
+                .header("Cache-Control", "public, max-age=30, stale-while-revalidate=60")
+                .body(Body::from(bytes))
+                .unwrap()
+        }
+        Err(e) => {
+            tracing::error!("MVT tile error z={z} x={x} y={y}: {e}");
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .unwrap()
+        }
+    }
 }

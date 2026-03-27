@@ -1,12 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { Fuel, MapPin, Search, X } from 'lucide-react';
-import { getMap } from '@/lib/api';
+import { Fuel, Locate, MapPin, Search, X } from 'lucide-react';
+import { searchNearbyStations } from '@/lib/api';
+import { getAuthUser } from '@/lib/auth';
 import { getBrandLogoUrl } from '@/lib/brandLogos';
-import type { Station } from '@/lib/types';
+import type { NearbyStation } from '@/lib/types';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   high:      { label: 'ปกติ',        cls: 'sp-s-high' },
@@ -16,34 +19,118 @@ const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   refilling: { label: 'กำลังเติม',   cls: 'sp-s-refilling' },
 };
 
+interface PickerStation {
+  id: number;
+  name: string;
+  brand: string;
+  province_name: string;
+  district_name: string;
+  status: string;
+  distance_km?: number;
+}
+
+async function fetchByText(q: string, provinceSlug?: string): Promise<PickerStation[]> {
+  const params = new URLSearchParams({ name: q, limit: '30' });
+  if (provinceSlug) params.set('province_slug', provinceSlug);
+  const res = await fetch(`${API_URL}/api/stations?${params}`);
+  if (!res.ok) return [];
+  const rows: Array<{ station_id: number; station_name: string; brand: string; province: string; district: string; fuel_statuses: Array<{ inventory_level: string }> }> = await res.json();
+  return rows.map((r) => ({
+    id: r.station_id,
+    name: r.station_name,
+    brand: r.brand,
+    province_name: r.province,
+    district_name: r.district,
+    status: r.fuel_statuses?.[0]?.inventory_level ?? 'unknown',
+  }));
+}
+
 export default function StationPicker() {
   const router = useRouter();
-  const [stations, setStations] = useState<Station[]>([]);
+  const [results, setResults] = useState<PickerStation[]>([]);
   const [query, setQuery] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [mode, setMode] = useState<'idle' | 'nearby' | 'search'>('idle');
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const user = useRef(getAuthUser());
+  const provinceSlug = user.current?.role === 'province_manager' ? user.current.province_slug : undefined;
 
+  // Staff with assigned station — skip picker
   useEffect(() => {
-    getMap({})
-      .then((r) => setStations(r.stations))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    const u = user.current;
+    if (u?.role === 'staff' && u.station_id) {
+      router.push(`/staff/update?station_id=${u.station_id}`);
+    }
+  }, [router]);
+
+  // Auto-locate on mount
+  useEffect(() => {
+    handleLocate();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return stations;
-    return stations.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) ||
-        s.brand.toLowerCase().includes(q) ||
-        s.province_name.toLowerCase().includes(q) ||
-        s.district_name.toLowerCase().includes(q),
+  const handleLocate = useCallback(() => {
+    if (!navigator.geolocation) return;
+    setLocating(true);
+    setMode('nearby');
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          setLoading(true);
+          const res = await searchNearbyStations({
+            lat: pos.coords.latitude,
+            lng: pos.coords.longitude,
+            radius_km: 5,
+            ...(provinceSlug ? { province_slug: provinceSlug } : {}),
+          });
+          setResults(res.stations.map((s: NearbyStation) => ({
+            id: s.id,
+            name: s.name,
+            brand: s.brand,
+            province_name: s.province_name,
+            district_name: s.district_name,
+            status: s.status,
+            distance_km: s.distance_km,
+          })));
+        } finally {
+          setLoading(false);
+          setLocating(false);
+        }
+      },
+      () => {
+        setLocating(false);
+        setMode('idle');
+      },
+      { timeout: 8000 },
     );
-  }, [stations, query]);
+  }, [provinceSlug]);
 
-  function handleSelect(station: Station) {
+  const handleQueryChange = useCallback((q: string) => {
+    setQuery(q);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!q.trim()) {
+      setMode('idle');
+      setResults([]);
+      return;
+    }
+    setMode('search');
+    debounceRef.current = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const rows = await fetchByText(q.trim(), provinceSlug);
+        setResults(rows);
+      } finally {
+        setLoading(false);
+      }
+    }, 350);
+  }, [provinceSlug]);
+
+  function handleSelect(station: PickerStation) {
     router.push(`/staff/update?station_id=${station.id}&name=${encodeURIComponent(station.name)}`);
   }
+
+  const showList = mode !== 'idle' || results.length > 0;
 
   return (
     <div className="sp-shell">
@@ -56,22 +143,33 @@ export default function StationPicker() {
         </div>
       </div>
 
-      {/* Search box */}
-      <div className="sp-search-wrap">
-        <Search size={14} className="sp-search-icon" />
-        <input
-          className="sp-search-input"
-          type="text"
-          placeholder="ค้นหาสถานี ชื่อ / แบรนด์ / จังหวัด / อำเภอ..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          autoFocus
-        />
-        {query && (
-          <button type="button" className="sp-search-clear" onClick={() => setQuery('')}>
-            <X size={13} />
-          </button>
-        )}
+      {/* Controls */}
+      <div className="sp-controls">
+        <div className="sp-search-wrap">
+          <Search size={14} className="sp-search-icon" />
+          <input
+            className="sp-search-input"
+            type="text"
+            placeholder="ค้นหาชื่อปั้ม / แบรนด์ / จังหวัด..."
+            value={query}
+            onChange={(e) => handleQueryChange(e.target.value)}
+            autoFocus
+          />
+          {query && (
+            <button type="button" className="sp-search-clear" onClick={() => handleQueryChange('')}>
+              <X size={13} />
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          className={`sp-locate-btn ${locating ? 'sp-locate-btn--active' : ''}`}
+          onClick={handleLocate}
+          disabled={locating}
+          title="ค้นหาปั้มใกล้ฉัน"
+        >
+          <Locate size={15} />
+        </button>
       </div>
 
       {/* Station list */}
@@ -79,18 +177,25 @@ export default function StationPicker() {
         {loading && (
           <div className="sp-empty">
             <span className="sp-loading-dot" />
-            <span>กำลังโหลดรายชื่อสถานี...</span>
+            <span>{locating ? 'กำลังระบุตำแหน่ง...' : 'กำลังค้นหา...'}</span>
           </div>
         )}
 
-        {!loading && filtered.length === 0 && (
+        {!loading && showList && results.length === 0 && (
           <div className="sp-empty">
             <Search size={22} style={{ opacity: 0.3 }} />
             <span>ไม่พบสถานีที่ตรงกับ &ldquo;{query}&rdquo;</span>
           </div>
         )}
 
-        {!loading && filtered.map((station) => {
+        {!loading && !showList && (
+          <div className="sp-empty">
+            <Locate size={22} style={{ opacity: 0.3 }} />
+            <span>กดปุ่ม <strong>ตำแหน่งของฉัน</strong> หรือพิมพ์ชื่อสถานี</span>
+          </div>
+        )}
+
+        {!loading && results.map((station) => {
           const s = STATUS_LABEL[station.status] ?? { label: station.status, cls: '' };
           return (
             <button
@@ -114,6 +219,13 @@ export default function StationPicker() {
                 <span className="sp-item-loc">
                   <MapPin size={10} />
                   {station.district_name} · {station.province_name}
+                  {station.distance_km !== undefined && (
+                    <span style={{ marginLeft: 4, opacity: 0.6 }}>
+                      · {station.distance_km < 1
+                        ? `${Math.round(station.distance_km * 1000)} ม.`
+                        : `${station.distance_km.toFixed(1)} กม.`}
+                    </span>
+                  )}
                 </span>
               </div>
               <div className="sp-item-right">
@@ -125,8 +237,10 @@ export default function StationPicker() {
         })}
       </div>
 
-      {!loading && stations.length > 0 && (
-        <p className="sp-count">{filtered.length} / {stations.length} สถานี</p>
+      {!loading && results.length > 0 && (
+        <p className="sp-count">
+          {mode === 'nearby' ? `${results.length} สถานีใกล้ฉัน (5 กม.)` : `${results.length} ผลการค้นหา`}
+        </p>
       )}
     </div>
   );

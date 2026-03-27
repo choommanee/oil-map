@@ -5,11 +5,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import Map, { Marker, NavigationControl, Popup, Source, Layer, type MapRef } from 'react-map-gl/maplibre';
+import { X } from 'lucide-react';
+import Map, { Marker, NavigationControl, Source, Layer, type MapRef } from 'react-map-gl/maplibre';
 import type { LngLatBoundsLike, MapLayerMouseEvent } from 'maplibre-gl';
 import type { FeatureCollection, GeoJsonProperties, LineString, MultiPolygon, Polygon } from 'geojson';
 import { getBrandLogoUrl } from '@/lib/brandLogos';
 import { getFuelMeta } from '@/lib/fuelTypes';
+import { getViewportStations } from '@/lib/api';
 import type { FuelLevel, ScopeMeta, Station } from '@/lib/types';
 
 interface DashboardMapProps {
@@ -21,6 +23,7 @@ interface DashboardMapProps {
     lng: number;
     radiusKm: number;
   } | null;
+  useViewportLoad?: boolean;
 }
 
 type BoundaryCollection = FeatureCollection<Polygon | MultiPolygon, GeoJsonProperties>;
@@ -253,7 +256,7 @@ function enrichBoundaries(raw: BoundaryCollection): BoundaryCollection {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function DashboardMap({ stations = [], scope, onSelectStation, searchOrigin }: DashboardMapProps) {
+export default function DashboardMap({ stations = [], scope, onSelectStation, searchOrigin, useViewportLoad = false }: DashboardMapProps) {
   const mapRef = useRef<MapRef | null>(null);
   const router = useRouter();
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -268,6 +271,32 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
   const [routeLine, setRouteLine] = useState<FeatureCollection<LineString, GeoJsonProperties> | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ distanceKm: number; durationMin: number } | null>(null);
   const [routeLoading, setRouteLoading] = useState(false);
+  const [viewportStations, setViewportStations] = useState<Station[]>([]);
+  const [viewportLoading, setViewportLoading] = useState(false);
+  const viewportDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchViewport = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const bounds = map.getBounds();
+    if (!bounds) return;
+    if (viewportDebounce.current) clearTimeout(viewportDebounce.current);
+    viewportDebounce.current = setTimeout(() => {
+      setViewportLoading(true);
+      getViewportStations({
+        north: bounds.getNorth(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        west: bounds.getWest(),
+        limit: 2000,
+      })
+        .then((s) => setViewportStations(s))
+        .catch(() => {})
+        .finally(() => setViewportLoading(false));
+    }, 600);
+  }, []);
+
+  const displayedStations = useViewportLoad ? viewportStations : stations;
 
   // Load + enrich province GeoJSON
   useEffect(() => {
@@ -413,14 +442,53 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
     }
   }, [searchOrigin]);
 
-  const handleProvinceClick = useCallback((event: MapLayerMouseEvent) => {
+  const handleMapClick = useCallback((event: MapLayerMouseEvent) => {
     const feature = event.features?.[0];
     if (!feature) return;
-    const slug = String(feature.properties?.slug ?? '');
-    if (slug) {
-      router.push(`/province/${slug}`);
+
+    // Click on MVT station logo — fetch full detail and show popup
+    if (feature.layer?.id === 'mvt-logos') {
+      const props = feature.properties ?? {};
+      const stationId: number = props.id;
+      if (!stationId) return;
+      void fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'}/api/stations/${stationId}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (!data?.station) return;
+          const s = data.station;
+          const station: Station = {
+            id: s.station_id ?? s.id,
+            name: s.station_name ?? s.name,
+            brand: s.brand,
+            brand_key: s.brand,
+            region: s.region ?? '',
+            province_name: s.province ?? '',
+            province_slug: s.province_slug ?? '',
+            district_name: s.district ?? '',
+            district_slug: s.district_slug ?? '',
+            address: s.address ?? '',
+            lat: s.latitude,
+            lng: s.longitude,
+            last_updated: s.last_updated ?? new Date().toISOString(),
+            status: props.status ?? 'unknown',
+            fuels: (s.fuel_statuses ?? []).map((f: { fuel_type: string; inventory_level: string; amount_liters: number; price_per_liter: number }) => ({
+              fuel_type: f.fuel_type,
+              status: f.inventory_level,
+              liters: f.amount_liters,
+              price: f.price_per_liter,
+            })),
+          };
+          setPopupStation(station);
+          mapRef.current?.flyTo({ center: [station.lng, station.lat], zoom: 15, duration: 700 });
+          void fetchRoute(station);
+        });
+      return;
     }
-  }, [router]);
+
+    // Click on province fill layer
+    const slug = String(feature.properties?.slug ?? '');
+    if (slug) router.push(`/province/${slug}`);
+  }, [router, fetchRoute]);
 
   const handleProvinceHover = useCallback((event: MapLayerMouseEvent) => {
     const feature = event.features?.[0];
@@ -457,18 +525,130 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
         dragRotate={false}
         pitchWithRotate={false}
         style={{ width: '100%', height: '100%' }}
-        interactiveLayerIds={['province-fill']}
-        onClick={handleProvinceClick}
+        interactiveLayerIds={mapZoom < 12 ? ['province-fill', 'mvt-logos'] : ['province-fill']}
+        onClick={handleMapClick}
         onMouseMove={handleProvinceHover}
         onMouseLeave={handleProvinceLeave}
         cursor={hoveredProvince ? 'pointer' : 'grab'}
         onZoom={(e) => setMapZoom(e.viewState.zoom)}
+        onIdle={() => { if (useViewportLoad) fetchViewport(); }}
         onLoad={() => {
           const map = mapRef.current;
           if (map) {
             map.fitBounds(THAILAND_BOUNDS, { padding: 24, duration: 0 });
+
+            // Composite icon generator: dark rounded-square bg + brand logo + status dot
+            const BRAND_LOGOS: Record<string, string> = {
+              PTT: '/brands/ptt.png',
+              Shell: '/brands/shell.png',
+              Bangchak: '/brands/bangchak.png',
+              Caltex: '/brands/caltex.png',
+              IRPC: '/brands/irpc.png',
+              PT: '/brands/pt.png',
+              SUSCO: '/brands/susco.png',
+              Esso: '/brands/fallback.svg',
+              Other: '/brands/fallback.svg',
+            };
+            const MVT_STATUS_COLORS: Record<string, string> = {
+              out: '#ff4f70', low: '#ffd166', refilling: '#32d9ff', ok: '#2fe08d', unknown: '#888888',
+            };
+
+            map.on('styleimagemissing', (e: { id: string }) => {
+              const id = e.id;
+              if (!id.startsWith('brand-') || map.hasImage(id)) return;
+
+              // ID format: "brand-{BrandName}-{status}"
+              const withoutPrefix = id.slice('brand-'.length);
+              let brand = withoutPrefix;
+              let status = 'ok';
+              for (const s of Object.keys(MVT_STATUS_COLORS)) {
+                if (withoutPrefix.endsWith(`-${s}`)) {
+                  brand = withoutPrefix.slice(0, withoutPrefix.length - s.length - 1);
+                  status = s;
+                  break;
+                }
+              }
+
+              const logoUrl = BRAND_LOGOS[brand] ?? '/brands/fallback.svg';
+              const statusColor = MVT_STATUS_COLORS[status] ?? '#2fe08d';
+              // Teardrop canvas: circle + pointed tip below
+              const W = 56, H = 72;
+              const CX = W / 2, CR = 24, CY = CR + 3, TIP_Y = H - 4;
+
+              const canvas = document.createElement('canvas');
+              canvas.width = W; canvas.height = H;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return;
+
+              function teardropPath() {
+                // Arc: clockwise from 150° to 30° = top half of circle
+                ctx!.beginPath();
+                ctx!.arc(CX, CY, CR, (5 * Math.PI) / 6, Math.PI / 6, false);
+                ctx!.lineTo(CX, TIP_Y);
+                ctx!.closePath();
+              }
+
+              function commit() {
+                if (!map || map.hasImage(id)) return;
+                const d = ctx!.getImageData(0, 0, W, H);
+                map.addImage(id, { width: W, height: H, data: new Uint8Array(d.data.buffer) });
+              }
+
+              function renderIcon(logoImg?: HTMLImageElement) {
+                ctx!.clearRect(0, 0, W, H);
+
+                // 1. Dark background fill
+                ctx!.globalAlpha = 0.9;
+                ctx!.fillStyle = '#0d1117';
+                teardropPath();
+                ctx!.fill();
+
+                // 2. Logo clipped to inner circle
+                ctx!.globalAlpha = 1;
+                if (logoImg) {
+                  ctx!.save();
+                  ctx!.beginPath();
+                  ctx!.arc(CX, CY, CR - 2, 0, Math.PI * 2);
+                  ctx!.clip();
+                  ctx!.drawImage(logoImg, CX - (CR - 2), CY - (CR - 2), (CR - 2) * 2, (CR - 2) * 2);
+                  ctx!.restore();
+                } else {
+                  ctx!.fillStyle = 'rgba(255,255,255,0.85)';
+                  ctx!.font = `bold 16px sans-serif`;
+                  ctx!.textAlign = 'center';
+                  ctx!.textBaseline = 'middle';
+                  ctx!.fillText(brand.slice(0, 2).toUpperCase(), CX, CY);
+                }
+
+                // 3. Status dot (top-right of circle)
+                const dotX = CX + CR * 0.64, dotY = CY - CR * 0.64;
+                ctx!.beginPath();
+                ctx!.arc(dotX, dotY, 6, 0, Math.PI * 2);
+                ctx!.fillStyle = statusColor;
+                ctx!.fill();
+                ctx!.strokeStyle = '#0d1117';
+                ctx!.lineWidth = 1.5;
+                ctx!.stroke();
+
+                // 4. Status border drawn LAST — crisp outline on top of everything
+                ctx!.globalAlpha = 0.92;
+                ctx!.strokeStyle = statusColor;
+                ctx!.lineWidth = 2.5;
+                teardropPath();
+                ctx!.stroke();
+                ctx!.globalAlpha = 1;
+
+                commit();
+              }
+
+              const img = new window.Image();
+              img.onload = () => renderIcon(img);
+              img.onerror = () => renderIcon();
+              img.src = logoUrl;
+            });
           }
           setMapLoaded(true);
+          if (useViewportLoad) fetchViewport();
         }}
         transformRequest={(url: string) => {
           if (VALLARIS_API_KEY && url.includes('vallarismaps.com') && !url.includes('api_key=')) {
@@ -558,6 +738,32 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
           </Source>
         )}
 
+        {/* ── Vector tile layer (zoom < 12) — GPU rendered, no DOM overhead ── */}
+        {mapZoom < 12 && (
+          <Source
+            id="stations-mvt"
+            type="vector"
+            tiles={[`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'}/api/tiles/{z}/{x}/{y}`]}
+            minzoom={0}
+            maxzoom={14}
+          >
+            {/* Brand logo symbols — MapLibre collision detection auto-hides overlap */}
+            <Layer
+              id="mvt-logos"
+              type="symbol"
+              source-layer="stations"
+              layout={{
+                'icon-image': ['concat', 'brand-', ['get', 'brand'], '-', ['get', 'status']],
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 4, 0.32, 7, 0.44, 10, 0.58, 11, 0.68],
+                'icon-anchor': 'bottom',
+                'icon-allow-overlap': true,
+                'icon-ignore-placement': true,
+              }}
+              paint={{ 'icon-opacity': 1 }}
+            />
+          </Source>
+        )}
+
         {/* Current location pin */}
         {searchOrigin && (
           <Marker longitude={searchOrigin.lng} latitude={searchOrigin.lat} anchor="center">
@@ -568,8 +774,8 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
           </Marker>
         )}
 
-        {/* Station markers */}
-        {stations.map((station, index) => {
+        {/* Station markers — only rendered when zoomed in enough (tiles handle zoom < 12) */}
+        {mapZoom >= 12 && displayedStations.map((station, index) => {
           const worst = getWorstFuelStatus(station);
           const tone = STATUS_TONE[worst];
           const showFallback = logoFailures[station.id];
@@ -588,7 +794,13 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
                   e.stopPropagation();
                   const next = popupStation?.id === station.id ? null : station;
                   setPopupStation(next);
-                  if (next) void fetchRoute(next); else { setRouteLine(null); setRouteInfo(null); }
+                  if (next) {
+                    mapRef.current?.flyTo({ center: [station.lng, station.lat], zoom: 15, duration: 700 });
+                    void fetchRoute(next);
+                  } else {
+                    setRouteLine(null);
+                    setRouteInfo(null);
+                  }
                   onSelectStation?.(station);
                 }}
                 aria-label={`สถานี ${station.name}`}
@@ -638,93 +850,117 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
           );
         })}
 
-        {/* Station popup */}
-        {popupStation && (
-          <Popup
-            longitude={popupStation.lng}
-            latitude={popupStation.lat}
-            anchor="bottom"
-            offset={28}
-            closeButton={false}
-            closeOnClick={false}
-            onClose={() => setPopupStation(null)}
-            className="maplibre-popup"
-          >
-            <div className="map-popup-v2">
-              {/* Header */}
-              <div className="map-popup-v2-head">
-                <div className="map-popup-v2-logo">
-                  <Image src={getBrandLogoUrl(popupStation.brand) || '/brands/fallback.svg'}
-                    alt={popupStation.brand} width={32} height={32} unoptimized
-                    onError={() => setLogoFailures((c) => ({ ...c, [popupStation.id]: true }))} />
-                </div>
-                <div className="map-popup-v2-info">
-                  <strong className="map-popup-v2-name">{popupStation.name}</strong>
-                  <span className="map-popup-v2-loc">{popupStation.district_name} · {popupStation.province_name}</span>
-                </div>
-                <span className={`map-popup-v2-badge badge-${popupStation.status}`}>
-                  {popupStation.status === 'high' || popupStation.status === 'medium' ? '✓' : popupStation.status === 'refilling' ? '↻' : '✗'}
-                  {' '}{STATUS_TONE[popupStation.status as FuelLevel]?.label ?? popupStation.status}
-                </span>
-                <button type="button" className="map-popup-v2-close" onClick={() => setPopupStation(null)}>✕</button>
-              </div>
+      </Map>
 
-              {/* Fuel badges */}
-              <div className="map-popup-v2-fuels">
-                {popupStation.fuels.map((f, i) => {
-                  const fm = getFuelMeta(f.fuel_type);
-                  return (
-                    <span key={i} className={`map-fuel-badge-lg fb-${f.status}`}
-                      style={{ '--fuel-color': fm.color } as React.CSSProperties}>
-                      <span className="map-fuel-badge-type">{fm.abbr}</span>
-                      <span className="map-fuel-badge-liters">{f.liters >= 1000 ? `${(f.liters/1000).toFixed(1)}k` : f.liters} L</span>
+      {/* ── Station detail bottom bar ── */}
+      {popupStation && (() => {
+        const distKm = routeInfo?.distanceKm
+          ?? (searchOrigin ? haversineKm(searchOrigin.lat, searchOrigin.lng, popupStation.lat, popupStation.lng) : null);
+        const pct = distKm != null ? distToPercent(distKm) : null;
+        const zoneName = distKm != null
+          ? (distKm <= 5 ? 'ใกล้มาก' : distKm <= 15 ? 'ใกล้' : distKm <= 30 ? 'ปานกลาง' : 'ไกล')
+          : null;
+        const statusLabel = STATUS_TONE[popupStation.status as FuelLevel]?.label ?? popupStation.status;
+        const closeBar = () => { setPopupStation(null); setRouteLine(null); setRouteInfo(null); };
+        return (
+          <div className="map-bottom-bar">
+            {/* Header row */}
+            <div className="map-bb-head">
+              <div className="map-bb-logo">
+                <Image src={getBrandLogoUrl(popupStation.brand)} alt={popupStation.brand}
+                  width={36} height={36} unoptimized
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+              </div>
+              <div className="map-bb-info">
+                <strong className="map-bb-name">{popupStation.name}</strong>
+                <span className="map-bb-loc">{popupStation.district_name} · {popupStation.province_name}</span>
+              </div>
+              <span className={`map-bb-badge bb-badge-${popupStation.status}`}>{statusLabel}</span>
+              <button type="button" className="map-bb-close" onClick={closeBar} aria-label="ปิด">
+                <X size={15} />
+              </button>
+            </div>
+
+            {/* Fuel badges */}
+            <div className="map-bb-fuels">
+              {popupStation.fuels.slice(0, 6).map((f, i) => {
+                const fm = getFuelMeta(f.fuel_type);
+                return (
+                  <span key={i} className={`map-bb-fuel fb-${f.status}`}
+                    style={{ '--fuel-color': fm.color } as React.CSSProperties}>
+                    <span className="map-bb-fuel-abbr">{fm.abbr}</span>
+                    <span className="map-bb-fuel-l">{f.liters >= 1000 ? `${(f.liters / 1000).toFixed(1)}k` : f.liters}L</span>
+                  </span>
+                );
+              })}
+            </div>
+
+            {/* Distance range bar */}
+            {pct != null && (
+              <div className="map-bb-range">
+                <div className="map-bb-range-track">
+                  <div className="map-bb-rz map-bb-rz--near" />
+                  <div className="map-bb-rz map-bb-rz--mid" />
+                  <div className="map-bb-rz map-bb-rz--far" />
+                  <div className="map-bb-rz map-bb-rz--xfar" />
+                  <div className="map-bb-range-ptr" style={{ left: `${pct}%` }} />
+                </div>
+                <div className="map-bb-range-labels">
+                  <span>0</span><span>5</span><span>15</span><span>30</span><span>50+</span>
+                </div>
+                <div className="map-bb-range-zones">
+                  <span>ใกล้มาก</span><span>ใกล้</span><span>ปานกลาง</span><span>ไกล</span>
+                </div>
+              </div>
+            )}
+
+            {/* Footer: route stats + nav */}
+            <div className="map-bb-footer">
+              <div className="map-bb-stats">
+                {routeLoading && <span className="map-bb-loading">กำลังคำนวณเส้นทาง…</span>}
+                {!routeLoading && routeInfo && (
+                  <>
+                    <span className="map-bb-stat">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6l9-3 9 3M3 18l9 3 9-3"/></svg>
+                      {routeInfo.distanceKm.toFixed(1)} กม.
                     </span>
-                  );
-                })}
+                    <span className="map-bb-stat">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                      {routeInfo.durationMin < 60
+                        ? `${Math.round(routeInfo.durationMin)} นาที`
+                        : `${Math.floor(routeInfo.durationMin / 60)} ชม. ${Math.round(routeInfo.durationMin % 60)} นาที`}
+                    </span>
+                    {zoneName && <span className="map-bb-zone-chip">{zoneName}</span>}
+                  </>
+                )}
+                {!routeLoading && !routeInfo && distKm != null && (
+                  <>
+                    <span className="map-bb-stat">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6l9-3 9 3M3 18l9 3 9-3"/></svg>
+                      ~{distKm.toFixed(1)} กม.
+                    </span>
+                    {zoneName && <span className="map-bb-zone-chip">{zoneName}</span>}
+                  </>
+                )}
               </div>
-
-              {/* Route info */}
-              {searchOrigin && (
-                <div className="map-popup-route">
-                  {routeLoading && <span className="map-popup-route-loading">กำลังคำนวณเส้นทาง…</span>}
-                  {!routeLoading && routeInfo && (
-                    <>
-                      <span className="map-popup-route-stat">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12h18M3 6l9-3 9 3M3 18l9 3 9-3"/></svg>
-                        {routeInfo.distanceKm.toFixed(1)} กม.
-                      </span>
-                      <span className="map-popup-route-stat">
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                        {routeInfo.durationMin < 60
-                          ? `${Math.round(routeInfo.durationMin)} นาที`
-                          : `${Math.floor(routeInfo.durationMin / 60)} ชม. ${Math.round(routeInfo.durationMin % 60)} นาที`}
-                      </span>
-                      <a
-                        href={`https://www.google.com/maps/dir/?api=1&origin=${searchOrigin.lat},${searchOrigin.lng}&destination=${popupStation.lat},${popupStation.lng}&travelmode=driving`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="map-popup-nav-btn"
-                        title="นำทาง Google Maps"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg>
-                      </a>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {/* Footer */}
-              <div className="map-popup-v2-footer">
-                <span className="map-popup-v2-time">
-                  อัปเดต {new Date(popupStation.last_updated).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.
-                </span>
+              <div className="map-bb-actions">
+                {searchOrigin && (
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&origin=${searchOrigin.lat},${searchOrigin.lng}&destination=${popupStation.lat},${popupStation.lng}&travelmode=driving`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="map-bb-nav-btn"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5S10.62 6.5 12 6.5s2.5 1.12 2.5 2.5S13.38 11.5 12 11.5z"/></svg>
+                    นำทาง
+                  </a>
+                )}
                 <Link href={`/staff/update?station_id=${popupStation.id}&name=${encodeURIComponent(popupStation.name)}`}
-                  className="map-popup-update-btn">บันทึก</Link>
+                  className="map-bb-edit-btn">บันทึก</Link>
               </div>
             </div>
-          </Popup>
-        )}
-      </Map>
+          </div>
+        );
+      })()}
 
       {/* ── Region selector overlay ── */}
       <div className="map-region-bar">
@@ -764,10 +1000,32 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
           <span className="map-shell-hud-dot" />
           {selectedRegion ? REGION_META[selectedRegion].label : 'แผนที่ประเทศไทย'}
         </div>
-        <div className="map-shell-hud-chip map-shell-hud-chip--ghost">{stations.length.toLocaleString()} สถานี</div>
+        <div className="map-shell-hud-chip map-shell-hud-chip--ghost">{displayedStations.length.toLocaleString()} สถานี</div>
       </div>
+      {useViewportLoad && viewportLoading && (
+        <div className="map-viewport-loading">กำลังโหลด…</div>
+      )}
     </div>
   );
+}
+
+// ── Distance helpers ──────────────────────────────────────────────────────────
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Non-linear 0-100% mapping: 0–5 km → 0–25%, 5–15 → 25–50%, 15–30 → 50–75%, 30–50+ → 75–100% */
+function distToPercent(km: number): number {
+  if (km <= 5)  return (km / 5) * 25;
+  if (km <= 15) return 25 + ((km - 5) / 10) * 25;
+  if (km <= 30) return 50 + ((km - 15) / 15) * 25;
+  return Math.min(75 + ((km - 30) / 20) * 25, 100);
 }
 
 // ── Geo bbox helper ───────────────────────────────────────────────────────────

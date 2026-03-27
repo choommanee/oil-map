@@ -15,6 +15,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 
 use state::AppState;
 
+mod auth;
 mod handlers;
 mod models;
 mod realtime;
@@ -64,14 +65,19 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let jwt_secret = env::var("JWT_SECRET")
+        .unwrap_or_else(|_| "demo-secret-change-in-prod".to_string());
+
     let realtime_hub = realtime::RealtimeHub::new();
     let app_state = AppState {
         pool,
         realtime_hub: realtime_hub.clone(),
+        jwt_secret,
     };
 
     // Routes that can be cached by CDN / browser (data changes at most every ~30s)
     let cached_routes = Router::new()
+        .route("/api/tiles/{z}/{x}/{y}", get(handlers::get_station_tile))
         .route("/api/map", get(handlers::get_map_data))
         .route("/api/map/viewport", get(handlers::get_viewport_stations))
         .route("/api/map/zone", get(handlers::get_zone_stations))

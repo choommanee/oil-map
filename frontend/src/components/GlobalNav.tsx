@@ -4,13 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Fuel, LayoutDashboard, LogIn, LogOut, MapPin, Navigation2, UserCog } from 'lucide-react';
-
-interface AuthUser {
-  id: string | number;
-  name: string;
-  role: string;
-  station_id?: number;
-}
+import { getAuthUser, logout, type AuthUser } from '@/lib/auth';
 
 export default function GlobalNav() {
   const path = usePathname();
@@ -22,17 +16,11 @@ export default function GlobalNav() {
   const [user, setUser] = useState<AuthUser | null>(null);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem('auth_user');
-      if (raw) setUser(JSON.parse(raw) as AuthUser);
-    } catch {
-      // ignore
-    }
+    setUser(getAuthUser());
   }, [path]); // re-read on navigation so it updates after login
 
   function handleLogout() {
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('auth_user');
+    logout();
     setUser(null);
     router.push('/');
   }

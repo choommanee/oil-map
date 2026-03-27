@@ -308,6 +308,8 @@ pub struct StationFilterQuery {
     pub lat: Option<f64>,
     pub lng: Option<f64>,
     pub radius_km: Option<f64>,
+    pub limit: Option<i64>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,7 +341,7 @@ pub struct RegisterRequest {
     pub email: String,
     pub password: String,
     pub station_id: Option<i32>,
-    pub role: Option<String>,
+    // role intentionally removed: all registrations land as 'staff'
 }
 
 #[derive(Debug, Deserialize)]
@@ -361,15 +363,16 @@ pub struct AuthUser {
     pub email: String,
     pub role: String,
     pub station_id: Option<i32>,
+    pub province_slug: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct StationUpdateRequest {
     pub fuel_type: String,
     pub inventory_level: String,
-    pub amount_liters: f64,
+    pub amount_liters: Option<f64>,  // optional: frontend no longer sends liters
     pub price_per_liter: f64,
-    pub updated_by: Option<String>,
+    // updated_by removed: derived from JWT claims in handler
     pub note: Option<String>,
 }
 
@@ -381,6 +384,7 @@ pub struct AppUser {
     pub password: String,
     pub role: String,
     pub station_id: Option<i32>,
+    pub province_slug: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

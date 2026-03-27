@@ -19,6 +19,7 @@ import type {
   Station,
   StationUpdatePayload,
 } from '@/lib/types';
+import { getAuthToken } from '@/lib/auth';
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8080';
 
@@ -56,12 +57,16 @@ async function requestJson<T>(
     }
   }
 
+  const token = getAuthToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init.headers as Record<string, string> | undefined),
+  };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
   const response = await fetch(url.toString(), {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init.headers || {}),
-    },
+    headers,
     cache: 'no-store',
   });
 
@@ -194,6 +199,10 @@ interface BackendNearbySearchResponse {
   results: BackendNearbyStationResult[];
 }
 
+interface BackendViewportResponse {
+  nearby_stations: BackendNearbyStationResult[];
+}
+
 interface BackendProvinceDetailResponse {
   id: number;
   name: string;
@@ -292,36 +301,44 @@ function mapStation(station: BackendStationSummary): Station {
   };
 }
 
-function mapNearbyResult(result: BackendNearbyStationResult): NearbyStation {
-  return {
+function groupNearbyResults(results: BackendNearbyStationResult[]): NearbyStation[] {
+  const byId = new Map<number, { base: BackendNearbyStationResult; fuels: BackendFuelStatusView[] }>();
+  for (const row of results) {
+    const entry = byId.get(row.station_id);
+    const fuel: BackendFuelStatusView = {
+      fuel_type: row.fuel_type,
+      inventory_level: row.inventory_level,
+      amount_liters: row.amount_liters,
+      price_per_liter: row.price_per_liter,
+      last_updated: row.last_updated,
+    };
+    if (entry) {
+      entry.fuels.push(fuel);
+    } else {
+      byId.set(row.station_id, { base: row, fuels: [fuel] });
+    }
+  }
+  return Array.from(byId.values()).map(({ base, fuels }) => ({
     ...mapStation({
-      id: result.station_id,
-      name: result.station_name,
-      brand: result.brand,
-      brand_key: result.brand,
-      region: result.region,
-      province: result.province,
-      province_slug: result.province_slug,
-      district: result.district,
-      district_slug: result.district_slug,
-      address: result.address,
-      latitude: result.latitude,
-      longitude: result.longitude,
-      last_updated: result.last_updated,
-      fuel_statuses: [
-        {
-          fuel_type: result.fuel_type,
-          inventory_level: result.inventory_level,
-          amount_liters: result.amount_liters,
-          price_per_liter: result.price_per_liter,
-          last_updated: result.last_updated,
-        },
-      ],
+      id: base.station_id,
+      name: base.station_name,
+      brand: base.brand,
+      brand_key: base.brand,
+      region: base.region,
+      province: base.province,
+      province_slug: base.province_slug,
+      district: base.district,
+      district_slug: base.district_slug,
+      address: base.address,
+      latitude: base.latitude,
+      longitude: base.longitude,
+      last_updated: base.last_updated,
+      fuel_statuses: fuels,
     }),
-    distance_km: result.distance_km,
-    primary_fuel_type: result.fuel_type,
-    primary_status: result.inventory_level,
-  };
+    distance_km: base.distance_km,
+    primary_fuel_type: base.fuel_type,
+    primary_status: base.inventory_level,
+  }));
 }
 
 function buildKpis(totals: BackendOverviewTotals): OverviewKpi[] {
@@ -368,6 +385,19 @@ function buildRegionSummaries(overview: BackendOverviewResponse): RegionSummary[
   if (overview.scope_level === 'national') {
     return overview.breakdown.map((item) => ({
       region: item.area_name,
+      area_slug: item.area_slug,
+      station_count: item.stations_count,
+      healthy_percent: Math.max(0, Math.min(100, Math.round(((item.stations_count - item.low_or_out_count) / Math.max(item.stations_count, 1)) * 100))),
+      warning_count: Math.max(0, item.low_or_out_count - Math.floor(item.low_or_out_count / 2)),
+      critical_count: Math.floor(item.low_or_out_count / 2),
+    }));
+  }
+
+  // For province/district level: breakdown items are districts
+  if (overview.breakdown.length > 0) {
+    return overview.breakdown.map((item) => ({
+      region: item.area_name,
+      area_slug: item.area_slug,
       station_count: item.stations_count,
       healthy_percent: Math.max(0, Math.min(100, Math.round(((item.stations_count - item.low_or_out_count) / Math.max(item.stations_count, 1)) * 100))),
       warning_count: Math.max(0, item.low_or_out_count - Math.floor(item.low_or_out_count / 2)),
@@ -462,6 +492,7 @@ export interface MapParams {
   brand?: string;
   fuel_type?: string;
   status?: string;
+  limit?: number;
 }
 
 export interface SearchNearbyParams {
@@ -482,7 +513,7 @@ export interface AuthPayload {
   email: string;
   password: string;
   station_id?: number;
-  role?: string;
+  // role removed: backend always assigns 'staff' on registration
 }
 
 export async function getOverview(params: OverviewParams): Promise<OverviewResponse> {
@@ -518,12 +549,59 @@ export async function getMap(params: MapParams): Promise<MapResponse> {
   }
 }
 
+export interface ViewportParams {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+  fuel_type?: string;
+  status?: string;
+  brand?: string;
+  limit?: number;
+}
+
+export async function getViewportStations(params: ViewportParams): Promise<Station[]> {
+  const data = await requestJson<BackendViewportResponse>('/api/map/viewport', undefined, params as unknown as QueryParams);
+  const byId = new Map<number, BackendStationSummary>();
+  for (const row of data.nearby_stations) {
+    const entry = byId.get(row.station_id);
+    const fuel: BackendFuelStatusView = {
+      fuel_type: row.fuel_type,
+      inventory_level: row.inventory_level,
+      amount_liters: row.amount_liters,
+      price_per_liter: row.price_per_liter,
+      last_updated: row.last_updated,
+    };
+    if (entry) {
+      entry.fuel_statuses.push(fuel);
+    } else {
+      byId.set(row.station_id, {
+        id: row.station_id,
+        name: row.station_name,
+        brand: row.brand,
+        brand_key: row.brand,
+        region: row.region,
+        province: row.province,
+        province_slug: row.province_slug,
+        district: row.district,
+        district_slug: row.district_slug,
+        address: row.address,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        last_updated: row.last_updated,
+        fuel_statuses: [fuel],
+      });
+    }
+  }
+  return Array.from(byId.values()).map(mapStation);
+}
+
 export async function searchNearbyStations(params: SearchNearbyParams): Promise<NearbySearchResponse> {
   try {
     const response = await requestJson<BackendNearbySearchResponse>('/api/stations/search', undefined, params as unknown as QueryParams);
     return {
       origin: { lat: response.origin_lat, lng: response.origin_lng, radius_km: response.radius_km },
-      stations: response.results.map(mapNearbyResult),
+      stations: groupNearbyResults(response.results),
     };
   } catch {
     const { MOCK_NEARBY_STATIONS } = await import('./mockData');
@@ -546,7 +624,7 @@ export async function getAvailableRoutes(params: RouteSearchParams): Promise<Rou
       lng: response.origin_lng,
     },
     fuel_type: response.fuel_type,
-    stations: response.stations.map(mapNearbyResult),
+    stations: groupNearbyResults(response.stations),
   };
 }
 
