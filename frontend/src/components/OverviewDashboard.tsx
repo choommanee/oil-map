@@ -195,6 +195,13 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
   const [nearbyStations, setNearbyStations] = useState<NearbyStation[]>([]);
   const [openPanels, setOpenPanels] = useState<Set<string>>(new Set(['summary', 'live', 'search']));
 
+  // On mobile close all panels by default so they don't cover the map
+  useEffect(() => {
+    if (window.innerWidth <= 640) {
+      setOpenPanels(new Set());
+    }
+  }, []);
+
   function togglePanel(key: string) {
     setOpenPanels((prev) => {
       const next = new Set(prev);

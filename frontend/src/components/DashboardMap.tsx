@@ -772,14 +772,14 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
               ]}
               layout={{
                 'icon-image': ['concat', 'brand-', ['get', 'brand'], '-', ['get', 'status']],
-                'icon-size': ['interpolate', ['linear'], ['zoom'], 5, 0.2, 7, 0.3, 9, 0.42, 11, 0.62],
+                'icon-size': ['interpolate', ['linear'], ['zoom'], 5, 0.38, 7, 0.48, 9, 0.58, 11, 0.72],
                 'icon-anchor': 'bottom',
                 'icon-allow-overlap': false,
                 'icon-ignore-placement': false,
-                'icon-padding': 6,
+                'icon-padding': 4,
               }}
               paint={{
-                'icon-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0.6, 7, 0.8, 8, 1],
+                'icon-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0.82, 7, 0.92, 8, 1],
               }}
             />
           </Source>

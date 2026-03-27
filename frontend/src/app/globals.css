@@ -3071,6 +3071,77 @@ html body>div:first-child {
   }
 }
 
+/* ── Mobile fullmap layout fixes ─────────────────────────────────── */
+@media (max-width: 640px) {
+
+  /* Float panels: full-width, bottom-half of screen */
+  .cmd-float-panel {
+    left: 10px !important;
+    right: 10px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: 52%;
+  }
+
+  .cmd-float-panel--summary {
+    top: 10px;
+    bottom: auto;
+  }
+
+  .cmd-float-panel--live {
+    top: auto;
+    bottom: 10px;
+  }
+
+  .cmd-float-panel--chat {
+    bottom: 10px;
+  }
+
+  .cmd-float-panel--search {
+    bottom: 10px;
+    top: auto;
+  }
+
+  /* Filter chips: scrollable row, don't stretch full width */
+  .cmd-map-filter-float {
+    left: 50%;
+    transform: translateX(-50%);
+    max-width: calc(100vw - 24px);
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    border-radius: 12px;
+  }
+  .cmd-map-filter-float::-webkit-scrollbar { display: none; }
+
+  /* Region bar: move to bottom, scrollable */
+  .map-region-bar {
+    top: auto;
+    bottom: 54px;
+    left: 8px;
+    right: 8px;
+    transform: none;
+    max-width: calc(100% - 16px);
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    border-radius: 12px;
+    scrollbar-width: none;
+  }
+  .map-region-bar::-webkit-scrollbar { display: none; }
+
+  /* Panel toolbar: allow wrapping on very narrow screens */
+  .cmd-panel-toolbar {
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  /* HUD chips: move up slightly to not clash with region bar */
+  .map-shell-hud {
+    bottom: 10px;
+  }
+}
+
 /* ═══════════════════════════════════════════════════
    AUTH PAGES
    ═══════════════════════════════════════════════════ */
