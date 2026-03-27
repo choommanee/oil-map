@@ -451,7 +451,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
       const props = feature.properties ?? {};
       const stationId: number = props.id;
       if (!stationId) return;
-      void fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080'}/api/stations/${stationId}`)
+      void fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8080'}/api/stations/${stationId}`)
         .then((r) => r.json())
         .then((data) => {
           if (!data?.station) return;
@@ -593,15 +593,17 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
               function renderIcon(logoImg?: HTMLImageElement) {
                 ctx!.clearRect(0, 0, W, H);
 
-                // 1. Dark circle head (semi-transparent)
-                ctx!.globalAlpha = 0.68;
+                const tailBaseY = HY + HR - 4;
+
+                // 1. Dark circle fill
+                ctx!.globalAlpha = 0.72;
                 ctx!.fillStyle = '#0d1117';
                 ctx!.beginPath();
                 ctx!.arc(CX, HY, HR, 0, Math.PI * 2);
                 ctx!.fill();
 
-                // 2. Dark triangular tail
-                const tailBaseY = HY + HR - 4;
+                // 2. Colored triangular tail (matches CSS border-top color)
+                ctx!.fillStyle = statusColor;
                 ctx!.beginPath();
                 ctx!.moveTo(CX - TAIL_W, tailBaseY);
                 ctx!.lineTo(CX, TIP_Y);
@@ -610,18 +612,18 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
                 ctx!.fill();
 
                 // 3. Logo clipped to inner circle
+                ctx!.globalAlpha = 1;
                 if (logoImg) {
                   ctx!.save();
                   ctx!.beginPath();
                   ctx!.arc(CX, HY, HR - 3, 0, Math.PI * 2);
                   ctx!.clip();
-                  ctx!.globalAlpha = 1;
+                  ctx!.globalAlpha = 0.9;
                   ctx!.drawImage(logoImg, CX - (HR - 3), HY - (HR - 3), (HR - 3) * 2, (HR - 3) * 2);
                   ctx!.restore();
                 } else {
-                  ctx!.globalAlpha = 1;
                   ctx!.fillStyle = 'rgba(255,255,255,0.85)';
-                  ctx!.font = 'bold 14px sans-serif';
+                  ctx!.font = 'bold 13px sans-serif';
                   ctx!.textAlign = 'center';
                   ctx!.textBaseline = 'middle';
                   ctx!.fillText(brand.slice(0, 2).toUpperCase(), CX, HY);
@@ -631,17 +633,17 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
                 const dotX = CX + HR * 0.65, dotY = HY - HR * 0.65;
                 ctx!.globalAlpha = 1;
                 ctx!.beginPath();
-                ctx!.arc(dotX, dotY, 5.5, 0, Math.PI * 2);
+                ctx!.arc(dotX, dotY, 5, 0, Math.PI * 2);
                 ctx!.fillStyle = statusColor;
                 ctx!.fill();
                 ctx!.strokeStyle = '#0d1117';
                 ctx!.lineWidth = 1.5;
                 ctx!.stroke();
 
-                // 5. Colored ring around circle head — drawn last for crisp edge
-                ctx!.globalAlpha = 0.82;
+                // 5. Colored circle border — drawn last, matches CSS 3px ring
+                ctx!.globalAlpha = 0.9;
                 ctx!.strokeStyle = statusColor;
-                ctx!.lineWidth = 2.5;
+                ctx!.lineWidth = 3;
                 ctx!.beginPath();
                 ctx!.arc(CX, HY, HR, 0, Math.PI * 2);
                 ctx!.stroke();

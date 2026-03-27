@@ -9,7 +9,7 @@ import { getAuthUser } from '@/lib/auth';
 import { getBrandLogoUrl } from '@/lib/brandLogos';
 import type { NearbyStation } from '@/lib/types';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8080';
+const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8080';
 
 const STATUS_LABEL: Record<string, { label: string; cls: string }> = {
   high:      { label: 'ปกติ',        cls: 'sp-s-high' },
