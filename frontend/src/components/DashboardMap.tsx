@@ -569,7 +569,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
                 }
               }
 
-              const logoUrl = BRAND_LOGOS[brand] ?? '/brands/fallback.svg';
+              const logoUrl = (brand !== 'Other' && BRAND_LOGOS[brand]) ? BRAND_LOGOS[brand] : null;
               const statusColor = MVT_STATUS_COLORS[status] ?? '#2fe08d';
               // Teardrop canvas: circle + pointed tip below
               const W = 56, H = 72;
@@ -641,6 +641,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
                 commit();
               }
 
+              if (!logoUrl) { renderIcon(); return; }
               const img = new window.Image();
               img.onload = () => renderIcon(img);
               img.onerror = () => renderIcon();
