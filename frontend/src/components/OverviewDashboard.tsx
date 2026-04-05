@@ -151,7 +151,7 @@ interface DistrictOverlayProps {
 }
 
 function DistrictOverlay({ districts, provinceSlug }: DistrictOverlayProps) {
-  const [visible, setVisible] = useState(true);
+  const [visible, setVisible] = useState(false);
 
   if (districts.length === 0) return null;
 
@@ -159,6 +159,20 @@ function DistrictOverlay({ districts, provinceSlug }: DistrictOverlayProps) {
     if (pct >= 65) return 'do-high';
     if (pct >= 40) return 'do-medium';
     return 'do-low';
+  }
+
+  if (!visible) {
+    return (
+      <button
+        type="button"
+        className="district-overlay-mini"
+        onClick={() => setVisible(true)}
+        title="แสดงสถานะรายอำเภอ"
+      >
+        <MapPin size={12} />
+        <span>อำเภอ ({districts.length})</span>
+      </button>
+    );
   }
 
   return (
@@ -172,39 +186,37 @@ function DistrictOverlay({ districts, provinceSlug }: DistrictOverlayProps) {
         <button
           type="button"
           className="district-overlay-toggle"
-          onClick={() => setVisible((v) => !v)}
-          title={visible ? 'ซ่อน' : 'แสดง'}
+          onClick={() => setVisible(false)}
+          title="ซ่อน"
         >
-          {visible ? <X size={11} /> : <span style={{ fontSize: '0.65rem' }}>แสดง</span>}
+          <X size={11} />
         </button>
       </div>
 
-      {visible && (
-        <div className="district-overlay-grid">
-          {districts.map((d, i) => {
-            const cls = toneClass(d.healthy_percent);
-            const href =
-              provinceSlug && d.area_slug
-                ? `/province/${provinceSlug}/district/${d.area_slug}`
-                : undefined;
-            const inner = (
-              <div className={`district-overlay-card ${cls}`}>
-                <span className="do-name">{d.region}</span>
-                <span className="do-pct">{d.healthy_percent}%</span>
-                <div className="do-bar-track">
-                  <div className="do-bar-fill" style={{ width: `${d.healthy_percent}%` }} />
-                </div>
+      <div className="district-overlay-grid">
+        {districts.map((d, i) => {
+          const cls = toneClass(d.healthy_percent);
+          const href =
+            provinceSlug && d.area_slug
+              ? `/province/${provinceSlug}/district/${d.area_slug}`
+              : undefined;
+          const inner = (
+            <div className={`district-overlay-card ${cls}`}>
+              <span className="do-name">{d.region}</span>
+              <span className="do-pct">{d.healthy_percent}%</span>
+              <div className="do-bar-track">
+                <div className="do-bar-fill" style={{ width: `${d.healthy_percent}%` }} />
               </div>
-            );
-            const key = `${d.region}-${d.area_slug ?? i}`;
-            return href ? (
-              <Link key={key} href={href} className="do-link">{inner}</Link>
-            ) : (
-              <div key={key}>{inner}</div>
-            );
-          })}
-        </div>
-      )}
+            </div>
+          );
+          const key = `${d.region}-${d.area_slug ?? i}`;
+          return href ? (
+            <Link key={key} href={href} className="do-link">{inner}</Link>
+          ) : (
+            <div key={key}>{inner}</div>
+          );
+        })}
+      </div>
     </div>
   );
 }
