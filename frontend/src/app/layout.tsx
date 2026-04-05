@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import GlobalNav from "@/components/GlobalNav";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -26,7 +25,6 @@ export default function RootLayout({
   return (
     <html lang="th" className={`${geistSans.variable} ${geistMono.variable}`} data-scroll-behavior="smooth">
       <body suppressHydrationWarning>
-        <GlobalNav />
         {children}
       </body>
     </html>

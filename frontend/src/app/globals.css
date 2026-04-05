@@ -2136,6 +2136,22 @@ html body>div:first-child {
   gap: 10px;
   flex-shrink: 0;
 }
+.cmd-header-link {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.cmd-header-link:hover { background: var(--surface-3); color: var(--text-1); }
 
 .cmd-clock {
   display: flex;

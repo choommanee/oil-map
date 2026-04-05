@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
-import { AlertTriangle, BarChart3, Bell, ChevronLeft, ChevronRight, Clock, Download, Droplets, Fuel, Gauge, MapPin, Navigation, RefreshCw, Search, ShieldAlert, X } from 'lucide-react';
+import { AlertTriangle, BarChart3, Bell, ChevronLeft, ChevronRight, Clock, Download, Droplets, Fuel, Gauge, MapPin, Navigation, Navigation2, Pencil, RefreshCw, Search, ShieldAlert, X } from 'lucide-react';
 import { getLiveFeed, exportStations } from '@/lib/api';
 import { createRealtimeSubscription } from '@/lib/realtime';
 import { getBrandLogoUrl } from '@/lib/brandLogos';
@@ -395,6 +395,19 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
         </div>
 
         <div className="cmd-header-right mobile-hidden">
+          <Link href="/nearby" className="cmd-header-link">
+            <Navigation2 size={13} />
+            <span>ปั้มใกล้ฉัน</span>
+          </Link>
+          {authUser && (
+            <Link
+              href={authUser.station_id ? `/staff/update?station_id=${authUser.station_id}` : '/staff/update'}
+              className="cmd-header-link"
+            >
+              <Pencil size={13} />
+              <span>บันทึกข้อมูล</span>
+            </Link>
+          )}
           <LiveClock />
           <div className="cmd-update-chip">
             <RefreshCw size={11} />
