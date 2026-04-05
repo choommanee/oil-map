@@ -1,151 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Bai+Jamjuree:wght@400;500;600;700&display=swap');
 @import 'leaflet/dist/leaflet.css';
 
-/* ── Global navigation bar ─────────────────────────────────────────────────── */
-.global-nav {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 44px;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  gap: 0;
-  padding: 0 16px;
-  background: rgba(7, 16, 25, 0.96);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-}
-
-.global-nav-brand {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 0.82rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  padding-right: 20px;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  margin-right: 12px;
-  white-space: nowrap;
-}
-
-.global-nav-links {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1;
-}
-
-.global-nav-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 11px;
-  border-radius: 6px;
-  color: var(--text-soft);
-  text-decoration: none;
-  font-size: 0.76rem;
-  font-weight: 500;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-
-.global-nav-link:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
-}
-
-.global-nav-link.active {
-  background: rgba(103, 166, 255, 0.12);
-  color: var(--accent);
-}
-
-.global-nav-breadcrumb {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 10px;
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  font-family: var(--mono);
-  border-left: 1px solid rgba(255, 255, 255, 0.07);
-  margin-left: 4px;
-}
-
-.global-nav-login {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 12px;
-  border-radius: 6px;
-  background: rgba(103, 166, 255, 0.12);
-  border: 1px solid rgba(103, 166, 255, 0.2);
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 0.75rem;
-  font-weight: 600;
-  transition: all 0.15s;
-}
-
-.global-nav-login:hover {
-  background: rgba(103, 166, 255, 0.2);
-}
-
-.global-nav-user {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 4px 10px 4px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: rgba(105, 240, 174, 0.06);
-}
-
-.global-nav-user-name {
-  font-size: 0.74rem;
-  font-weight: 700;
-  color: var(--green);
-  white-space: nowrap;
-  max-width: 120px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.global-nav-user-role {
-  font-size: 0.62rem;
-  color: var(--text-dim);
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  white-space: nowrap;
-}
-
-.global-nav-logout {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: rgba(255, 107, 107, 0.1);
-  border: 1px solid rgba(255, 107, 107, 0.18);
-  color: var(--red);
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.global-nav-logout:hover {
-  background: rgba(255, 107, 107, 0.18);
-}
-
-/* Push body content below nav */
-body {
-  padding-top: 44px;
-}
 
 :root {
   --bg: #071019;
@@ -2054,15 +1909,15 @@ html body>div:first-child {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 9px 16px;
-  background: rgba(7, 13, 21, 0.97);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-soft);
+  gap: 10px;
+  padding: 6px 16px;
+  background: rgba(7, 13, 21, 0.98);
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
   backdrop-filter: blur(12px);
   position: sticky;
-  top: 8px;
+  top: 0;
   z-index: 20;
 }
 
