@@ -1,15 +1,22 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { AlertTriangle, Bell, Droplets, Fuel, Gauge, MapPin, RefreshCw, ShieldAlert, Truck, X, Zap } from 'lucide-react';
-import { getLiveFeed } from '@/lib/api';
+import Image from 'next/image';
+import { AlertTriangle, BarChart3, Bell, ChevronLeft, ChevronRight, Clock, Download, Droplets, Fuel, Gauge, MapPin, Navigation, RefreshCw, Search, ShieldAlert, X } from 'lucide-react';
+import { getLiveFeed, exportStations } from '@/lib/api';
 import { createRealtimeSubscription } from '@/lib/realtime';
 import { getBrandLogoUrl } from '@/lib/brandLogos';
+import { getFuelMeta } from '@/lib/fuelTypes';
 import NearbySearchPanel from '@/components/NearbySearchPanel';
 import FieldReportsFeed from '@/components/FieldReportsFeed';
 import OperationsChat from '@/components/OperationsChat';
+import AlertCenter from '@/components/AlertCenter';
+import TrendChart from '@/components/TrendChart';
+import StationHistory from '@/components/StationHistory';
 import type { FeedItem, MapResponse, NearbySearchResponse, NearbyStation, OverviewResponse, RegionSummary, Station } from '@/lib/types';
+import { getAuthUser, logout } from '@/lib/auth';
+import type { AuthUser } from '@/lib/auth';
 import Link from 'next/link';
 
 const DashboardMap = dynamic(() => import('@/components/DashboardMap'), {
@@ -41,6 +48,21 @@ const FUEL_FILTERS = [
 ];
 
 const KPI_ICONS = [Fuel, Gauge, AlertTriangle, ShieldAlert];
+
+type SidebarTab = 'summary' | 'search' | 'alerts' | 'trends' | 'live' | 'chat';
+
+const SIDEBAR_TABS: { key: SidebarTab; label: string; icon: typeof Fuel }[] = [
+  { key: 'summary', label: 'สรุป',     icon: Gauge },
+  { key: 'search',  label: 'ค้นหา',    icon: Search },
+  { key: 'alerts',  label: 'แจ้งเตือน', icon: ShieldAlert },
+  { key: 'trends',  label: 'เทรนด์',   icon: BarChart3 },
+  { key: 'live',    label: 'Live',      icon: Droplets },
+  { key: 'chat',    label: 'แชท',      icon: Bell },
+];
+
+const STATUS_LABEL: Record<string, string> = {
+  high: 'ปกติ', ok: 'ปกติ', low: 'ใกล้หมด', out: 'หมด', refilling: 'กำลังเติม', unknown: 'ไม่ทราบ',
+};
 
 /* ── Live Clock ──────────────────────────────────────────────────── */
 function LiveClock() {
@@ -159,7 +181,7 @@ function DistrictOverlay({ districts, provinceSlug }: DistrictOverlayProps) {
 
       {visible && (
         <div className="district-overlay-grid">
-          {districts.map((d) => {
+          {districts.map((d, i) => {
             const cls = toneClass(d.healthy_percent);
             const href =
               provinceSlug && d.area_slug
@@ -174,10 +196,11 @@ function DistrictOverlay({ districts, provinceSlug }: DistrictOverlayProps) {
                 </div>
               </div>
             );
+            const key = `${d.region}-${d.area_slug ?? i}`;
             return href ? (
-              <Link key={d.region} href={href} className="do-link">{inner}</Link>
+              <Link key={key} href={href} className="do-link">{inner}</Link>
             ) : (
-              <div key={d.region}>{inner}</div>
+              <div key={key}>{inner}</div>
             );
           })}
         </div>
@@ -186,43 +209,108 @@ function DistrictOverlay({ districts, provinceSlug }: DistrictOverlayProps) {
   );
 }
 
+/* ── Station Detail Panel (in sidebar) ───────────────────────────── */
+function StationDetail({ station, searchOrigin, onClose }: {
+  station: Station;
+  searchOrigin?: { lat: number; lng: number; radiusKm: number } | null;
+  onClose: () => void;
+}) {
+  const statusLabel = STATUS_LABEL[station.status] ?? station.status;
+  return (
+    <div className="sb-station-detail">
+      <div className="sb-station-head">
+        <div className="sb-station-logo">
+          <Image src={getBrandLogoUrl(station.brand)} alt={station.brand}
+            width={40} height={40} unoptimized
+            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+        </div>
+        <div className="sb-station-info">
+          <strong className="sb-station-name">{station.name}</strong>
+          <span className="sb-station-loc">
+            <MapPin size={10} />
+            {station.district_name} · {station.province_name}
+          </span>
+        </div>
+        <button type="button" className="sb-station-close" onClick={onClose} aria-label="ปิด">
+          <X size={14} />
+        </button>
+      </div>
+
+      <span className={`sb-station-badge sb-badge-${station.status}`}>{statusLabel}</span>
+
+      {station.fuels && station.fuels.length > 0 && (
+        <div className="sb-station-fuels">
+          <span className="sb-station-fuels-title">สถานะน้ำมัน</span>
+          {station.fuels.slice(0, 6).map((f, i) => {
+            const fm = getFuelMeta(f.fuel_type);
+            return (
+              <div key={i} className={`sb-fuel-row fb-${f.status}`}>
+                <span className="sb-fuel-dot" style={{ background: fm.color }} />
+                <span className="sb-fuel-name">{fm.label}</span>
+                <span className="sb-fuel-liters">{f.liters >= 1000 ? `${(f.liters / 1000).toFixed(1)}k` : f.liters} L</span>
+                {f.price_per_liter > 0 && <span className="sb-fuel-price">฿{f.price_per_liter.toFixed(2)}</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="sb-station-actions">
+        {searchOrigin && (
+          <a
+            href={`https://www.google.com/maps/dir/?api=1&origin=${searchOrigin.lat},${searchOrigin.lng}&destination=${station.lat},${station.lng}&travelmode=driving`}
+            target="_blank" rel="noopener noreferrer"
+            className="sb-nav-btn"
+          >
+            <Navigation size={14} />
+            นำทาง Google Maps
+          </a>
+        )}
+        <Link href={`/staff/update?station_id=${station.id}&name=${encodeURIComponent(station.name)}`}
+          className="sb-edit-btn">
+          บันทึกข้อมูล
+        </Link>
+      </div>
+
+      <StationHistory stationId={station.id} />
+    </div>
+  );
+}
+
 /* ── Main Dashboard ──────────────────────────────────────────────── */
 export default function OverviewDashboard({ overview, map, feed }: OverviewDashboardProps) {
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
+  const [focusStation, setFocusStation] = useState<Station | null>(null);
   const [liveFeed, setLiveFeed] = useState<FeedItem[]>(feed);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [activeFilter, setActiveFilter] = useState('all');
   const [searchOrigin, setSearchOrigin] = useState<{ lat: number; lng: number; radiusKm: number } | null>(null);
   const [nearbyStations, setNearbyStations] = useState<NearbyStation[]>([]);
-  const [openPanels, setOpenPanels] = useState<Set<string>>(new Set(['summary', 'live', 'search']));
+  const [activeTab, setActiveTab] = useState<SidebarTab>('summary');
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [clientReady, setClientReady] = useState(false);
 
-  // On mobile close all panels by default so they don't cover the map
+  // Client-only init (avoid hydration mismatch)
   useEffect(() => {
-    if (window.innerWidth <= 640) {
-      setOpenPanels(new Set());
-    }
+    if (clientReady) return;
+    setClientReady(true);
+    setAuthUser(getAuthUser());
+    if (window.innerWidth <= 768) setSidebarOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function togglePanel(key: string) {
-    setOpenPanels((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }
   const feedLock = useRef(false);
   const lastFetch = useRef(0);
   const jitterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    // Fetch with jitter — spreads 10k simultaneous WS events over MAX_JITTER_MS
-    // preventing thundering herd on /api/feeds/live
-    const MAX_JITTER_MS = 8_000; // 10k users × random(0–8s) = ~1,250 req/sec
-    const MIN_INTERVAL_MS = 15_000; // each client refetches at most every 15s
+    const MAX_JITTER_MS = 8_000;
+    const MIN_INTERVAL_MS = 15_000;
 
     function scheduleFeedRefetch() {
-      if (jitterTimer.current) return; // already scheduled
+      if (jitterTimer.current) return;
       const elapsed = Date.now() - lastFetch.current;
-      if (elapsed < MIN_INTERVAL_MS) return; // too soon
+      if (elapsed < MIN_INTERVAL_MS) return;
       const delay = Math.random() * MAX_JITTER_MS;
       jitterTimer.current = setTimeout(() => {
         jitterTimer.current = null;
@@ -266,7 +354,6 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
     return base.filter((s) => s.status === activeFilter);
   }, [map.stations, nearbyStations, activeFilter]);
 
-  // Fuel mix totals for stats bar
   const statusCounts = useMemo(() => ({
     high:      map.stations.filter((s) => s.status === 'high').length,
     low:       map.stations.filter((s) => s.status === 'low').length,
@@ -275,10 +362,21 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
     total:     map.stations.length,
   }), [map.stations]);
 
-  const panelSummaryOpen = openPanels.has('summary');
-  const panelLiveOpen    = openPanels.has('live');
-  const panelChatOpen    = openPanels.has('chat');
-  const panelSearchOpen  = openPanels.has('search');
+  const handleStationSelect = useCallback((station: Station) => {
+    setSelectedStation(station);
+  }, []);
+
+  const handleSearchStationClick = useCallback((s: NearbyStation) => {
+    setSelectedStation(s);
+    // Use a new object reference each time so useEffect triggers even for same station
+    setFocusStation({ ...s });
+    if (window.innerWidth <= 768) setSidebarOpen(false);
+  }, []);
+
+  const clearSelectedStation = useCallback(() => {
+    setSelectedStation(null);
+    setFocusStation(null);
+  }, []);
 
   return (
     <div className="cmd-shell cmd-shell--fullmap">
@@ -306,176 +404,242 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
             <Bell size={15} />
             {alertCount > 0 && <span className="cmd-notif-badge">{alertCount}</span>}
           </button>
-          <div className="cmd-user-pill">
-            <div className="cmd-user-ava">A</div>
-            <div className="cmd-user-info">
-              <span className="cmd-user-name">Admin</span>
-              <span className="cmd-user-role">ผู้ดูแลระบบ</span>
+          {authUser ? (
+            <div className="cmd-user-pill" title={`${authUser.email} — ${authUser.role}`}>
+              <div className="cmd-user-ava">{authUser.name.charAt(0).toUpperCase()}</div>
+              <div className="cmd-user-info">
+                <span className="cmd-user-name">{authUser.name}</span>
+                <span className="cmd-user-role">
+                  {authUser.role === 'admin' ? 'ผู้ดูแลระบบ' : authUser.role === 'province_manager' ? `ผู้จัดการ${authUser.province_slug ? ` (${authUser.province_slug})` : ''}` : 'เจ้าหน้าที่'}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => { logout(); window.location.href = '/auth'; }}
+                title="ออกจากระบบ"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '0 2px', display: 'flex', alignItems: 'center' }}
+              >✕</button>
             </div>
-          </div>
+          ) : (
+            <Link
+              href="/auth"
+              style={{ padding: '5px 14px', borderRadius: '8px', background: 'var(--accent)', color: '#fff', fontSize: '0.78rem', fontWeight: 600, textDecoration: 'none' }}
+            >
+              เข้าสู่ระบบ
+            </Link>
+          )}
         </div>
       </header>
 
-      {/* ── PANEL TOGGLE TOOLBAR ── */}
-      <div className="cmd-panel-toolbar">
-        <button
-          type="button"
-          className={`cmd-ptb-btn ${panelSummaryOpen ? 'cmd-ptb-btn--on' : ''}`}
-          onClick={() => togglePanel('summary')}
-          title="สรุปภาพรวม"
-        >
-          <Gauge size={14} />
-          <span>สรุป</span>
-          {alertCount > 0 && <span className="cmd-ptb-badge">{alertCount}</span>}
-        </button>
-        <button
-          type="button"
-          className={`cmd-ptb-btn ${panelLiveOpen ? 'cmd-ptb-btn--on' : ''}`}
-          onClick={() => togglePanel('live')}
-          title="รายงานสนาม"
-        >
-          <Droplets size={14} />
-          <span>Live</span>
-          {criticalFeedCount > 0 && <span className="cmd-ptb-badge cmd-ptb-badge--warn">{criticalFeedCount}</span>}
-        </button>
-        <button
-          type="button"
-          className={`cmd-ptb-btn ${panelChatOpen ? 'cmd-ptb-btn--on' : ''}`}
-          onClick={() => togglePanel('chat')}
-          title="แชทปฏิบัติการ"
-        >
-          <Bell size={14} />
-          <span>แชท</span>
-        </button>
-        <button
-          type="button"
-          className={`cmd-ptb-btn ${panelSearchOpen ? 'cmd-ptb-btn--on' : ''}`}
-          onClick={() => togglePanel('search')}
-          title="ค้นหาปั้มใกล้เคียง"
-        >
-          <MapPin size={14} />
-          <span>ค้นหา</span>
-        </button>
-      </div>
+      {/* ── MAIN CONTENT: Sidebar + Map ── */}
+      <div className="cmd-main-layout">
 
-      {/* ── FULL MAP AREA ── */}
-      <div className="cmd-fullmap-wrap">
+        {/* ── LEFT SIDEBAR ── */}
+        <aside className={`cmd-sidebar ${sidebarOpen ? 'cmd-sidebar--open' : 'cmd-sidebar--closed'}`}>
 
-        {/* Map */}
-        <div className="cmd-map-wrap" style={{ position: 'relative', width: '100%', height: '100%' }}>
-
-          {/* Filter chips floating on map */}
-          <div className="cmd-map-filter-float">
-            {FUEL_FILTERS.map((f) => {
-              const count = f.key === 'all' ? map.stations.length : map.stations.filter((s) => s.status === f.key).length;
+          {/* Sidebar tabs */}
+          <div className="cmd-sidebar-tabs">
+            {SIDEBAR_TABS.map((tab) => {
+              const Icon = tab.icon;
+              const badge = tab.key === 'live' && criticalFeedCount > 0 ? criticalFeedCount
+                          : tab.key === 'summary' && alertCount > 0 ? alertCount
+                          : 0;
               return (
                 <button
-                  key={f.key}
+                  key={tab.key}
                   type="button"
-                  onClick={() => setActiveFilter(f.key)}
-                  className={`cmd-filter-chip ${activeFilter === f.key ? 'active' : ''}`}
-                  style={{ '--chip-color': f.color } as React.CSSProperties}
+                  className={`cmd-sidebar-tab ${activeTab === tab.key ? 'cmd-sidebar-tab--active' : ''}`}
+                  onClick={() => { setActiveTab(tab.key); if (!sidebarOpen) setSidebarOpen(true); }}
+                  title={tab.label}
                 >
-                  <span className="cmd-filter-dot" style={{ background: f.color }} />
-                  <span className="cmd-filter-label">{f.label}</span>
-                  <span className="cmd-filter-count">{count}</span>
+                  <Icon size={15} />
+                  <span>{tab.label}</span>
+                  {badge > 0 && <span className="cmd-sidebar-tab-badge">{badge}</span>}
                 </button>
               );
             })}
           </div>
 
-          <DashboardMap
-            stations={displayStations}
-            scope={map.scope}
-            onSelectStation={setSelectedStation}
-            searchOrigin={searchOrigin}
-            useViewportLoad={map.scope.level === 'national' || map.scope.level === 'region'}
-          />
-          {(map.scope.level === 'province' || map.scope.level === 'district') && (
-            <DistrictOverlay districts={overview.region_summaries} provinceSlug={map.scope.province_slug} />
-          )}
-        </div>
+          {/* Sidebar content */}
+          <div className="cmd-sidebar-content">
 
-        {/* ── Floating: Summary panel ── */}
-        {panelSummaryOpen && (
-          <div className="cmd-float-panel cmd-float-panel--summary">
-            <div className="cmd-float-panel-head">
-              <Gauge size={13} /><span>สรุปภาพรวม</span>
-              <button type="button" className="cmd-float-close" onClick={() => togglePanel('summary')}><X size={13} /></button>
-            </div>
-            <div className="cmd-float-kpis">
-              {overview.kpis.slice(0, 4).map((kpi, i) => {
-                const Icon = KPI_ICONS[i] ?? Fuel;
-                const toneMap: Record<string, string> = { success: 'kpi-success', warning: 'kpi-warning', danger: 'kpi-danger', info: 'kpi-info' };
-                return (
-                  <div key={kpi.label} className={`cmd-kpi-card ${toneMap[kpi.tone ?? ''] ?? 'kpi-neutral'}`}>
-                    <div className="cmd-kpi-icon-wrap"><Icon size={20} /></div>
-                    <div className="cmd-kpi-body">
-                      <div className="cmd-kpi-label">{kpi.label}</div>
-                      <div className="cmd-kpi-value">{kpi.value}</div>
-                    </div>
+            {/* Station detail overlay — shows on top of any tab */}
+            {selectedStation && (
+              <StationDetail
+                station={selectedStation}
+                searchOrigin={searchOrigin}
+                onClose={clearSelectedStation}
+              />
+            )}
+
+            {/* Tab: Summary */}
+            {activeTab === 'summary' && !selectedStation && (
+              <div className="cmd-sidebar-panel">
+                <div className="cmd-sidebar-panel-head">
+                  <Gauge size={13} /><span>สรุปภาพรวม</span>
+                </div>
+                <div className="cmd-float-kpis">
+                  {overview.kpis.slice(0, 4).map((kpi, i) => {
+                    const Icon = KPI_ICONS[i] ?? Fuel;
+                    const toneMap: Record<string, string> = { success: 'kpi-success', warning: 'kpi-warning', danger: 'kpi-danger', info: 'kpi-info' };
+                    return (
+                      <div key={kpi.label} className={`cmd-kpi-card ${toneMap[kpi.tone ?? ''] ?? 'kpi-neutral'}`}>
+                        <div className="cmd-kpi-icon-wrap"><Icon size={20} /></div>
+                        <div className="cmd-kpi-body">
+                          <div className="cmd-kpi-label">{kpi.label}</div>
+                          <div className="cmd-kpi-value">{kpi.value}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <BrandStrip stations={map.stations} />
+                <div className="cmd-status-bar">
+                  {(['high','low','out','refilling'] as const).map((k) => {
+                    const dotCls = k === 'high' ? 'csb-green' : k === 'low' ? 'csb-yellow' : k === 'out' ? 'csb-red' : 'csb-cyan';
+                    const fillCls = k === 'high' ? 'csf-green' : k === 'low' ? 'csf-yellow' : k === 'out' ? 'csf-red' : 'csf-cyan';
+                    const label = k === 'high' ? 'ปกติ' : k === 'low' ? 'ใกล้หมด' : k === 'out' ? 'หมด' : 'กำลังเติม';
+                    const val = statusCounts[k];
+                    return (
+                      <div key={k} className="cmd-status-segment">
+                        <span className={`cmd-status-dot ${dotCls}`} />
+                        <span className="cmd-status-label">{label}</span>
+                        <span className="cmd-status-val">{val}</span>
+                        <div className="cmd-status-track">
+                          <div className={`cmd-status-fill ${fillCls}`} style={{ width: `${Math.round((val / Math.max(statusCounts.total, 1)) * 100)}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div className="cmd-status-total">
+                    <Gauge size={14} />
+                    <span className="cmd-status-total-num">{statusCounts.total}</span>
+                    <span className="cmd-status-total-label">สถานีทั้งหมด</span>
                   </div>
-                );
-              })}
-            </div>
-            <BrandStrip stations={map.stations} />
-            <div className="cmd-status-bar">
-              {(['high','low','out','refilling'] as const).map((k) => {
-                const dotCls = k === 'high' ? 'csb-green' : k === 'low' ? 'csb-yellow' : k === 'out' ? 'csb-red' : 'csb-cyan';
-                const fillCls = k === 'high' ? 'csf-green' : k === 'low' ? 'csf-yellow' : k === 'out' ? 'csf-red' : 'csf-cyan';
-                const label = k === 'high' ? 'ปกติ' : k === 'low' ? 'ใกล้หมด' : k === 'out' ? 'หมด' : 'กำลังเติม';
-                const val = statusCounts[k];
-                return (
-                  <div key={k} className="cmd-status-segment">
-                    <span className={`cmd-status-dot ${dotCls}`} />
-                    <span className="cmd-status-label">{label}</span>
-                    <span className="cmd-status-val">{val}</span>
-                    <div className="cmd-status-track">
-                      <div className={`cmd-status-fill ${fillCls}`} style={{ width: `${Math.round((val / Math.max(statusCounts.total, 1)) * 100)}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-              <div className="cmd-status-total">
-                <Gauge size={14} />
-                <span className="cmd-status-total-num">{statusCounts.total}</span>
-                <span className="cmd-status-total-label">สถานีทั้งหมด</span>
+                </div>
               </div>
+            )}
+
+            {/* Tab: Search */}
+            {activeTab === 'search' && !selectedStation && (
+              <div className="cmd-sidebar-panel">
+                <NearbySearchPanel
+                  onResult={(stations, origin) => {
+                    setNearbyStations(stations);
+                    setSearchOrigin(origin);
+                  }}
+                  onStationClick={handleSearchStationClick}
+                  onClear={() => {
+                    setNearbyStations([]);
+                    setSearchOrigin(null);
+                    clearSelectedStation();
+                  }}
+                />
+              </div>
+            )}
+
+            {/* Tab: Alerts */}
+            {activeTab === 'alerts' && !selectedStation && (
+              <div className="cmd-sidebar-panel">
+                <AlertCenter scope={map.scope} />
+              </div>
+            )}
+
+            {/* Tab: Trends */}
+            {activeTab === 'trends' && !selectedStation && (
+              <div className="cmd-sidebar-panel">
+                <div className="cmd-sidebar-panel-head">
+                  <BarChart3 size={13} /><span>แนวโน้มสถานะน้ำมัน</span>
+                  <button
+                    type="button"
+                    className="cmd-export-btn"
+                    onClick={async () => {
+                      try {
+                        const csv = await exportStations('csv', map.scope.province_slug);
+                        const blob = new Blob([csv], { type: 'text/csv' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `oil-map-export-${map.scope.province_slug || 'all'}.csv`;
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      } catch { /* ignore */ }
+                    }}
+                    title="ส่งออก CSV"
+                  >
+                    <Download size={12} />
+                    CSV
+                  </button>
+                </div>
+                <TrendChart provinceSlug={map.scope.province_slug} />
+              </div>
+            )}
+
+            {/* Tab: Live Feed */}
+            {activeTab === 'live' && !selectedStation && (
+              <div className="cmd-sidebar-panel">
+                <FieldReportsFeed feed={sortedFeed} scope={map.scope} />
+              </div>
+            )}
+
+            {/* Tab: Chat */}
+            {activeTab === 'chat' && !selectedStation && (
+              <div className="cmd-sidebar-panel cmd-sidebar-panel--chat">
+                <OperationsChat scope={map.scope} />
+              </div>
+            )}
+          </div>
+        </aside>
+
+        {/* Sidebar collapse toggle */}
+        <button
+          type="button"
+          className="cmd-sidebar-toggle"
+          onClick={() => setSidebarOpen((v) => !v)}
+          aria-label={sidebarOpen ? 'ปิดแถบด้านข้าง' : 'เปิดแถบด้านข้าง'}
+        >
+          {sidebarOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+        </button>
+
+        {/* ── MAP AREA ── */}
+        <div className="cmd-fullmap-wrap">
+          <div className="cmd-map-wrap" style={{ position: 'relative', width: '100%', height: '100%' }}>
+
+            {/* Filter chips floating on map */}
+            <div className="cmd-map-filter-float">
+              {FUEL_FILTERS.map((f) => {
+                const count = f.key === 'all' ? map.stations.length : map.stations.filter((s) => s.status === f.key).length;
+                return (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => setActiveFilter(f.key)}
+                    className={`cmd-filter-chip ${activeFilter === f.key ? 'active' : ''}`}
+                    style={{ '--chip-color': f.color } as React.CSSProperties}
+                  >
+                    <span className="cmd-filter-dot" style={{ background: f.color }} />
+                    <span className="cmd-filter-label">{f.label}</span>
+                    <span className="cmd-filter-count">{count}</span>
+                  </button>
+                );
+              })}
             </div>
-          </div>
-        )}
 
-        {/* ── Floating: Live feed ── */}
-        {panelLiveOpen && (
-          <div className="cmd-float-panel cmd-float-panel--live">
-            <button type="button" className="cmd-float-close cmd-float-close--abs" onClick={() => togglePanel('live')}><X size={13} /></button>
-            <FieldReportsFeed feed={sortedFeed} scope={map.scope} />
-          </div>
-        )}
-
-        {/* ── Floating: Chat ── */}
-        {panelChatOpen && (
-          <div className="cmd-float-panel cmd-float-panel--chat">
-            <button type="button" className="cmd-float-close cmd-float-close--abs" onClick={() => togglePanel('chat')}><X size={13} /></button>
-            <OperationsChat scope={map.scope} />
-          </div>
-        )}
-
-        {/* ── Floating: Nearby Search ── */}
-        {panelSearchOpen && (
-          <div className="cmd-float-panel cmd-float-panel--search">
-            <div className="cmd-float-panel-head">
-              <MapPin size={13} /><span>ค้นหาปั้มใกล้เคียง</span>
-              <button type="button" className="cmd-float-close" onClick={() => togglePanel('search')}><X size={13} /></button>
-            </div>
-            <NearbySearchPanel
-              onResult={(stations, origin) => {
-                setNearbyStations(stations);
-                setSearchOrigin(origin);
-              }}
+            <DashboardMap
+              stations={displayStations}
+              scope={map.scope}
+              onSelectStation={handleStationSelect}
+              onDismissStation={clearSelectedStation}
+              searchOrigin={searchOrigin}
+              useViewportLoad={map.scope.level === 'national' || map.scope.level === 'region'}
+              focusStation={focusStation}
+              districtStats={(map.scope.level === 'province' || map.scope.level === 'district') ? overview.region_summaries : []}
             />
+            {(map.scope.level === 'province' || map.scope.level === 'district') && (
+              <DistrictOverlay districts={overview.region_summaries} provinceSlug={map.scope.province_slug} />
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

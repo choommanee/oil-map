@@ -461,6 +461,118 @@ pub struct ChatQuery {
     pub limit: Option<i64>,
 }
 
+// ── Alerts ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AlertItem {
+    pub province_name: String,
+    pub province_slug: String,
+    pub district_name: Option<String>,
+    pub district_slug: Option<String>,
+    pub total_stations: i64,
+    pub critical_stations: i64,
+    pub critical_percent: f64,
+    pub severity: String,
+    pub top_issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AlertsResponse {
+    pub alerts: Vec<AlertItem>,
+}
+
+#[derive(Debug, FromRow)]
+pub struct AlertRow {
+    pub province_name: String,
+    pub province_slug: String,
+    pub district_name: Option<String>,
+    pub district_slug: Option<String>,
+    pub total_stations: i64,
+    pub critical_stations: i64,
+    pub critical_percent: f64,
+}
+
+#[derive(Debug, FromRow)]
+pub struct AlertIssueRow {
+    pub province_slug: String,
+    pub district_slug: Option<String>,
+    pub fuel_type: String,
+    pub inventory_level: String,
+    pub cnt: i64,
+}
+
+// ── Trends ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct TrendsQuery {
+    pub province_slug: Option<String>,
+    pub days: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TrendDay {
+    pub date: String,
+    pub ok: i64,
+    pub low: i64,
+    pub out: i64,
+    pub refilling: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TrendsResponse {
+    pub province: String,
+    pub days: Vec<TrendDay>,
+}
+
+// ── Station history ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct HistoryEntry {
+    pub fuel_type: String,
+    pub old_level: Option<String>,
+    pub new_level: String,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StationHistoryResponse {
+    pub station_id: i32,
+    pub station_name: String,
+    pub history: Vec<HistoryEntry>,
+}
+
+#[derive(Debug, FromRow)]
+pub struct HistoryRow {
+    pub fuel_type: String,
+    pub inventory_level: String,
+    pub last_updated: DateTime<Utc>,
+    pub updated_by: Option<String>,
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct ExportQuery {
+    pub format: Option<String>,
+    pub province_slug: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+pub struct ExportRow {
+    pub station_id: i32,
+    pub station_name: String,
+    pub brand: String,
+    pub province: String,
+    pub district: String,
+    pub latitude: f64,
+    pub longitude: f64,
+    pub fuel_type: String,
+    pub inventory_level: String,
+    pub amount_liters: f64,
+    pub price_per_liter: f64,
+}
+
 pub fn brand_key(brand: &str) -> String {
     match brand.to_lowercase().as_str() {
         "ptt" => "PTT".to_string(),

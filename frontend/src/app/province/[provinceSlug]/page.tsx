@@ -1,10 +1,36 @@
-import Link from 'next/link';
-import { ArrowLeft, MapPin } from 'lucide-react';
 import OverviewDashboard from '@/components/OverviewDashboard';
 import { getLiveFeed, getProvinceDetail } from '@/lib/api';
+import type { MapResponse, OverviewResponse } from '@/lib/types';
 
 interface ProvincePageProps {
   params: Promise<{ provinceSlug: string }>;
+}
+
+function emptyProvinceData(provinceSlug: string): { overview: OverviewResponse; map: MapResponse } {
+  const scope = {
+    title: `จังหวัด ${provinceSlug}`,
+    subtitle: 'ยังไม่มีข้อมูลสถานีในระบบ',
+    level: 'province' as const,
+    province_slug: provinceSlug,
+    province_name: provinceSlug,
+  };
+  return {
+    overview: {
+      scope,
+      generated_at: new Date().toISOString(),
+      kpis: [
+        { label: 'สถานีทั้งหมด', value: 0, tone: 'info', helper: 'ยังไม่มีข้อมูล' },
+        { label: 'พร้อมให้บริการ', value: '—', tone: 'neutral' },
+        { label: 'จุดเฝ้าระวัง', value: 0, tone: 'neutral' },
+        { label: 'จุดวิกฤต', value: 0, tone: 'success' },
+      ],
+      region_summaries: [],
+      fuel_mix: [],
+      alerts: [],
+      featured_stations: [],
+    },
+    map: { scope, stations: [] },
+  };
 }
 
 export default async function ProvincePage({ params }: ProvincePageProps) {
@@ -15,30 +41,10 @@ export default async function ProvincePage({ params }: ProvincePageProps) {
       getProvinceDetail(provinceSlug),
       getLiveFeed(),
     ]);
-
     return <OverviewDashboard overview={provinceDetail.overview} map={provinceDetail.map} feed={feed} />;
   } catch {
-    return (
-      <main style={{
-        minHeight: '100vh', display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', gap: '16px',
-        background: 'var(--bg)', color: 'var(--text)',
-        fontFamily: 'var(--sans)',
-      }}>
-        <MapPin size={40} style={{ color: 'var(--text-muted)' }} />
-        <h1 style={{ fontSize: '1.3rem', fontWeight: 700 }}>ยังไม่มีข้อมูลจังหวัดนี้ในระบบ</h1>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          <code style={{ color: 'var(--accent)' }}>{provinceSlug}</code> — ยังไม่ถูกเพิ่มเข้าระบบ
-        </p>
-        <Link href="/" style={{
-          display: 'inline-flex', alignItems: 'center', gap: '6px',
-          padding: '8px 18px', borderRadius: '8px', background: 'var(--accent)',
-          color: '#fff', textDecoration: 'none', fontSize: '0.85rem', fontWeight: 600,
-        }}>
-          <ArrowLeft size={14} />
-          กลับหน้าภาพรวม
-        </Link>
-      </main>
-    );
+    // API unavailable or no data — still render the map zoomed to the province
+    const fallback = emptyProvinceData(provinceSlug);
+    return <OverviewDashboard overview={fallback.overview} map={fallback.map} feed={[]} />;
   }
 }

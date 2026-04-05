@@ -26,9 +26,11 @@ const STATUS_LABEL: Record<string, string> = {
 
 interface NearbySearchPanelProps {
   onResult?: (stations: NearbyStation[], origin: { lat: number; lng: number; radiusKm: number }) => void;
+  onStationClick?: (station: NearbyStation) => void;
+  onClear?: () => void;
 }
 
-export default function NearbySearchPanel({ onResult }: NearbySearchPanelProps) {
+export default function NearbySearchPanel({ onResult, onStationClick, onClear }: NearbySearchPanelProps) {
   const [radius, setRadius] = useState(10);
   const [fuelType, setFuelType] = useState('');
   const [results, setResults] = useState<NearbyStation[]>([]);
@@ -130,17 +132,33 @@ export default function NearbySearchPanel({ onResult }: NearbySearchPanelProps) 
       {error && <p className="ns-error">{error}</p>}
 
       {origin && !loading && (
-        <p className="ns-origin-label">
-          <Navigation size={10} />
-          ตำแหน่งอ้างอิง {origin.lat.toFixed(4)}, {origin.lng.toFixed(4)}
-        </p>
+        <div className="ns-origin-row">
+          <p className="ns-origin-label">
+            <Navigation size={10} />
+            ตำแหน่งอ้างอิง {origin.lat.toFixed(4)}, {origin.lng.toFixed(4)}
+          </p>
+          {results.length > 0 && (
+            <button
+              type="button"
+              className="ns-clear-btn"
+              onClick={() => { setResults([]); setOrigin(null); setError(''); onClear?.(); }}
+            >
+              ล้าง
+            </button>
+          )}
+        </div>
       )}
 
       {/* Results */}
       {results.length > 0 && (
         <div className="ns-results">
           {results.slice(0, 8).map((s, i) => (
-            <div key={`${s.id}-${i}`} className="ns-item">
+            <button
+              key={`${s.id}-${i}`}
+              type="button"
+              className="ns-item"
+              onClick={() => onStationClick?.(s)}
+            >
               <div className="ns-item-logo">
                 <Image src={getBrandLogoUrl(s.brand)} alt={s.brand} width={28} height={28} unoptimized
                   onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
@@ -161,7 +179,7 @@ export default function NearbySearchPanel({ onResult }: NearbySearchPanelProps) 
                   {STATUS_LABEL[s.status] ?? s.status}
                 </span>
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}

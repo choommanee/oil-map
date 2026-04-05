@@ -165,3 +165,42 @@ export interface StationUpdatePayload {
   note?: string;
   // amount_liters and updated_by removed: handled server-side
 }
+
+export interface AlertCenterItem {
+  province_name: string;
+  province_slug: string;
+  district_name?: string;
+  district_slug?: string;
+  total_stations: number;
+  critical_stations: number;
+  critical_percent: number;
+  severity: 'critical' | 'warning';
+  top_issues: string[];
+}
+
+export interface TrendDay {
+  date: string;
+  ok: number;
+  low: number;
+  out: number;
+  refilling: number;
+}
+
+export interface TrendData {
+  province?: string;
+  days: TrendDay[];
+}
+
+export interface HistoryEntry {
+  fuel_type: string;
+  old_level: string;
+  new_level: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface StationHistoryData {
+  station_id: number;
+  station_name: string;
+  history: HistoryEntry[];
+}

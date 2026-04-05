@@ -1,4 +1,5 @@
 import type {
+  AlertCenterItem,
   AlertItem,
   AuthResponse,
   DistrictDetailResponse,
@@ -17,7 +18,9 @@ import type {
   RouteAvailableResponse,
   ScopeMeta,
   Station,
+  StationHistoryData,
   StationUpdatePayload,
+  TrendData,
 } from '@/lib/types';
 import { getAuthToken } from '@/lib/auth';
 
@@ -778,4 +781,33 @@ export async function updateStationFuel(stationId: number, payload: StationUpdat
     success: true,
     message: response.message,
   };
+}
+
+export async function getAlerts(): Promise<{ alerts: AlertCenterItem[] }> {
+  return requestJson<{ alerts: AlertCenterItem[] }>('/api/alerts');
+}
+
+export async function getTrends(provinceSlug?: string, days?: number): Promise<TrendData> {
+  const query: QueryParams = {};
+  if (provinceSlug) query.province_slug = provinceSlug;
+  if (days) query.days = days;
+  return requestJson<TrendData>('/api/trends', undefined, query);
+}
+
+export async function getStationHistory(stationId: number): Promise<StationHistoryData> {
+  return requestJson<StationHistoryData>(`/api/stations/${stationId}/history`);
+}
+
+export async function exportStations(format: 'csv', provinceSlug?: string): Promise<string> {
+  const url = new URL('/api/export/stations', API_BASE_URL);
+  url.searchParams.set('format', format);
+  if (provinceSlug) url.searchParams.set('province_slug', provinceSlug);
+
+  const token = getAuthToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const response = await fetch(url.toString(), { headers, cache: 'no-store' });
+  if (!response.ok) throw new Error(`Export failed with status ${response.status}`);
+  return response.text();
 }

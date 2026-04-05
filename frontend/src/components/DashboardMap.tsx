@@ -12,18 +12,21 @@ import type { FeatureCollection, GeoJsonProperties, LineString, MultiPolygon, Po
 import { getBrandLogoUrl } from '@/lib/brandLogos';
 import { getFuelMeta } from '@/lib/fuelTypes';
 import { getViewportStations } from '@/lib/api';
-import type { FuelLevel, ScopeMeta, Station } from '@/lib/types';
+import type { FuelLevel, RegionSummary, ScopeMeta, Station } from '@/lib/types';
 
 interface DashboardMapProps {
   stations?: Station[];
   scope?: ScopeMeta;
   onSelectStation?: (station: Station) => void;
+  onDismissStation?: () => void;
   searchOrigin?: {
     lat: number;
     lng: number;
     radiusKm: number;
   } | null;
   useViewportLoad?: boolean;
+  focusStation?: Station | null;
+  districtStats?: RegionSummary[];
 }
 
 type BoundaryCollection = FeatureCollection<Polygon | MultiPolygon, GeoJsonProperties>;
@@ -256,7 +259,7 @@ function enrichBoundaries(raw: BoundaryCollection): BoundaryCollection {
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function DashboardMap({ stations = [], scope, onSelectStation, searchOrigin, useViewportLoad = false }: DashboardMapProps) {
+export default function DashboardMap({ stations = [], scope, onSelectStation, onDismissStation, searchOrigin, useViewportLoad = false, focusStation, districtStats = [] }: DashboardMapProps) {
   const mapRef = useRef<MapRef | null>(null);
   const router = useRouter();
   const [mapLoaded, setMapLoaded] = useState(false);
@@ -274,6 +277,20 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
   const [viewportStations, setViewportStations] = useState<Station[]>([]);
   const [viewportLoading, setViewportLoading] = useState(false);
   const viewportDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Pulse animation — inner ring (fast 2s) + outer ring (slow 3.2s)
+  const [pulseInner, setPulseInner] = useState(0.5);
+  const [pulseOuter, setPulseOuter] = useState(0.3);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = Date.now();
+      const t1 = (now % 2000) / 2000;
+      const t2 = (now % 3200) / 3200;
+      setPulseInner(0.2 + 0.55 * Math.sin(t1 * Math.PI * 2) ** 2);
+      setPulseOuter(0.08 + 0.3 * Math.sin(t2 * Math.PI * 2) ** 2);
+    }, 80);
+    return () => clearInterval(id);
+  }, []);
 
   const fetchViewport = useCallback(() => {
     const map = mapRef.current;
@@ -308,12 +325,26 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
     return () => { active = false; };
   }, []);
 
-  // Load district GeoJSON (lazy — loaded after province data)
+  // Load district GeoJSON (lazy — enrich with normalized names for matching)
   useEffect(() => {
     let active = true;
     fetch('/thailand-districts.geojson')
       .then((r) => r.json())
-      .then((data) => { if (active) setDistricts(data as BoundaryCollection); })
+      .then((data: BoundaryCollection) => {
+        if (!active) return;
+        // Enrich: PascalCase → spaced name + slug
+        // "ThaLi" → name_spaced: "Tha Li", district_slug: "tha-li"
+        // "AmnatCharoen" → province_spaced: "Amnat Charoen"
+        for (const f of data.features) {
+          const p = f.properties ?? {};
+          const toSpaced = (s: string) => s.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^K\./, '');
+          const toSlug = (s: string) => toSpaced(s).trim().toLowerCase().replace(/\s+/g, '-');
+          p.name_spaced = toSpaced(p.district ?? '');
+          p.district_slug = toSlug(p.district ?? '');
+          p.province_spaced = toSpaced(p.province ?? '');
+        }
+        setDistricts(data);
+      })
       .catch(() => {});
     return () => { active = false; };
   }, []);
@@ -330,6 +361,24 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
     expr.push('#888888'); // fallback
     return expr as unknown as string;
   }, []);
+
+  // District heatmap fill color expression — maps district_slug → color by healthy_percent
+  const districtHeatmapColor = useMemo(() => {
+    if (districtStats.length === 0) return 'rgba(0,0,0,0)';
+    const expr: unknown[] = ['match', ['get', 'district_slug']];
+    for (const d of districtStats) {
+      if (!d.area_slug) continue;
+      const pct = d.healthy_percent;
+      const color = pct >= 80 ? 'rgba(105,240,174,0.18)'
+                  : pct >= 60 ? 'rgba(105,240,174,0.10)'
+                  : pct >= 40 ? 'rgba(255,209,102,0.18)'
+                  : pct >= 20 ? 'rgba(255,159,67,0.22)'
+                  : 'rgba(255,107,107,0.25)';
+      expr.push(d.area_slug, color);
+    }
+    expr.push('rgba(0,0,0,0)'); // fallback
+    return expr;
+  }, [districtStats]);
 
   const fillOpacity = useMemo(() => {
     if (scope?.province_slug) {
@@ -377,7 +426,25 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
     const map = mapRef.current;
     if (!map || !scope || scope.level === 'national') return;
 
-    // Try to fit province boundary from loaded GeoJSON
+    // Try to fit district boundary from loaded GeoJSON (district scope)
+    if (scope.level === 'district' && scope.district_slug && districts.features.length > 0) {
+      const feature = districts.features.find(
+        (f) => String(f.properties?.district_slug ?? '') === scope.district_slug,
+      );
+      if (feature?.geometry) {
+        const bbox = geoBbox(feature.geometry as GeoJsonGeometry);
+        if (bbox) {
+          map.fitBounds(bbox, {
+            padding: { top: 40, bottom: 40, left: 40, right: 40 },
+            duration: 1000,
+            maxZoom: 14,
+          });
+          return;
+        }
+      }
+    }
+
+    // Try to fit province boundary from loaded GeoJSON (province scope)
     if ((scope.level === 'province' || scope.level === 'district') && scope.province_slug && rawBoundaries.features.length > 0) {
       const feature = rawBoundaries.features.find(
         (f) => String(f.properties?.slug ?? '') === scope.province_slug,
@@ -385,7 +452,11 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
       if (feature?.geometry) {
         const bbox = geoBbox(feature.geometry as GeoJsonGeometry);
         if (bbox) {
-          map.fitBounds(bbox, { padding: 64, duration: 1000, maxZoom: 10 });
+          map.fitBounds(bbox, {
+            padding: { top: 40, bottom: 40, left: 40, right: 40 },
+            duration: 1000,
+            maxZoom: 13,
+          });
           return;
         }
       }
@@ -402,7 +473,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
     }
 
     map.fitBounds(THAILAND_BOUNDS, { padding: 40, duration: 800, maxZoom: 5.8 });
-  }, [scope, mapLoaded, rawBoundaries]);
+  }, [scope, mapLoaded, rawBoundaries, districts]);
 
   // Fly to searchOrigin
   useEffect(() => {
@@ -411,6 +482,17 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
     if (!map || !searchOrigin) return;
     map.flyTo({ center: [searchOrigin.lng, searchOrigin.lat], zoom: 12, duration: 1200 });
   }, [searchOrigin, mapLoaded]);
+
+  // Dismiss popup card + sidebar detail when user zooms out past DOM-marker threshold
+  useEffect(() => {
+    if (mapZoom < 11 && popupStation) {
+      setPopupStation(null);
+      setRouteLine(null);
+      setRouteInfo(null);
+      onDismissStation?.();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapZoom]);
 
   // Fetch driving route from OSRM
   const fetchRoute = useCallback(async (station: Station) => {
@@ -442,25 +524,34 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
     }
   }, [searchOrigin]);
 
+  // External focus: fly to station selected from sidebar
+  useEffect(() => {
+    if (!mapLoaded || !focusStation) return;
+    const map = mapRef.current;
+    if (!map) return;
+    setPopupStation(focusStation);
+    map.flyTo({ center: [focusStation.lng, focusStation.lat], zoom: 14, duration: 1200 });
+    void fetchRoute(focusStation);
+  }, [focusStation, mapLoaded, fetchRoute]);
+
   const handleMapClick = useCallback((event: MapLayerMouseEvent) => {
     const feature = event.features?.[0];
     if (!feature) return;
 
-    // Click on MVT station logo — fetch full detail and show popup
-    if (feature.layer?.id === 'mvt-logos') {
+    // Click on MVT station dot or logo — fetch full detail and show popup
+    if (feature.layer?.id === 'mvt-dots' || feature.layer?.id === 'mvt-logos') {
       const props = feature.properties ?? {};
       const stationId: number = props.id;
       if (!stationId) return;
       void fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8080'}/api/stations/${stationId}`)
         .then((r) => r.json())
-        .then((data) => {
-          if (!data?.station) return;
-          const s = data.station;
+        .then((s) => {
+          if (!s?.id) return;
           const station: Station = {
-            id: s.station_id ?? s.id,
-            name: s.station_name ?? s.name,
+            id: s.id,
+            name: s.name,
             brand: s.brand,
-            brand_key: s.brand,
+            brand_key: s.brand_key ?? s.brand,
             region: s.region ?? '',
             province_name: s.province ?? '',
             province_slug: s.province_slug ?? '',
@@ -479,24 +570,50 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
             })),
           };
           setPopupStation(station);
-          mapRef.current?.flyTo({ center: [station.lng, station.lat], zoom: 15, duration: 700 });
+          mapRef.current?.flyTo({ center: [station.lng, station.lat], duration: 500 });
           void fetchRoute(station);
         });
       return;
     }
 
-    // Click on province fill layer
+    // Click on district fill layer (province scope) → drill down to district
+    if (feature.layer?.id === 'district-fill') {
+      const raw = String(feature.properties?.district_slug ?? feature.properties?.slug ?? feature.properties?.district ?? '');
+      // Convert PascalCase "ChiangKhan" → "chiang-khan"
+      const districtSlug = raw
+        .replace(/([a-z])([A-Z])/g, '$1-$2')
+        .replace(/\s+/g, '-')
+        .toLowerCase();
+      const provinceSl = scope?.province_slug;
+      if (districtSlug && provinceSl) {
+        router.push(`/province/${provinceSl}/district/${districtSlug}`);
+      }
+      return;
+    }
+
+    // Click on province fill layer (national scope)
     const slug = String(feature.properties?.slug ?? '');
-    if (slug) router.push(`/province/${slug}`);
-  }, [router, fetchRoute]);
+    if (slug && scope?.level !== 'province' && scope?.level !== 'district') {
+      router.push(`/province/${slug}`);
+    }
+  }, [router, fetchRoute, scope]);
+
+  const [hoveredDistrict, setHoveredDistrict] = useState<string | null>(null);
 
   const handleProvinceHover = useCallback((event: MapLayerMouseEvent) => {
     const feature = event.features?.[0];
-    setHoveredProvince(feature ? String(feature.properties?.name ?? '') : null);
+    if (feature?.layer?.id === 'district-fill') {
+      setHoveredDistrict(feature ? String(feature.properties?.district ?? feature.properties?.ADM2_EN ?? feature.properties?.name ?? '') : null);
+      setHoveredProvince(null);
+    } else {
+      setHoveredProvince(feature ? String(feature.properties?.name ?? '') : null);
+      setHoveredDistrict(null);
+    }
   }, []);
 
   const handleProvinceLeave = useCallback(() => {
     setHoveredProvince(null);
+    setHoveredDistrict(null);
   }, []);
 
   const handleRegionClick = useCallback((key: RegionKey) => {
@@ -525,7 +642,12 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
         dragRotate={false}
         pitchWithRotate={false}
         style={{ width: '100%', height: '100%' }}
-        interactiveLayerIds={mapZoom >= 5 && mapZoom < 12 ? ['province-fill', 'mvt-logos'] : ['province-fill']}
+        interactiveLayerIds={[
+          ...(mapZoom >= 5 && mapZoom < 9 ? ['mvt-dots'] : []),
+          ...(mapZoom >= 9 && mapZoom < 12 ? ['mvt-logos'] : []),
+          ...(scope?.level !== 'province' && scope?.level !== 'district' ? ['province-fill'] : []),
+          ...(scope?.level === 'province' && mapZoom >= 7 ? ['district-fill'] : []),
+        ]}
         onClick={handleMapClick}
         onMouseMove={handleProvinceHover}
         onMouseLeave={handleProvinceLeave}
@@ -750,8 +872,101 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
           </Source>
         )}
 
-        {/* ── Vector tile layer (zoom < 12) — GPU rendered, no DOM overhead ── */}
-        {mapZoom < 12 && (
+        {/* ── District boundaries — province & district scope ── */}
+        {(scope?.level === 'province' || scope?.level === 'district') && (
+          <Source id="districts-click" type="geojson" data={districts}>
+            {/* Heatmap fill — colored by healthy_percent */}
+            {districtStats.length > 0 && (
+              <Layer
+                id="district-heatmap"
+                type="fill"
+                minzoom={4}
+                filter={['==', ['get', 'province_spaced'], scope.province_name ?? '']}
+                paint={{
+                  'fill-color': districtHeatmapColor as unknown as string,
+                  'fill-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0.6, 8, 0.8, 10, 0.5] as unknown as number,
+                }}
+              />
+            )}
+            {/* Fill: hover highlight (province) or selected highlight (district) */}
+            <Layer
+              id="district-fill"
+              type="fill"
+              minzoom={4}
+              filter={['==', ['get', 'province_spaced'], scope.province_name ?? '']}
+              paint={{
+                'fill-color': [
+                  'case',
+                  ...(scope?.level === 'district' && scope.district_slug
+                    ? [['==', ['get', 'district_slug'], scope.district_slug], 'rgba(103,166,255,0.2)'] as unknown[]
+                    : []),
+                  ['==', ['get', 'district'], hoveredDistrict ?? ''], 'rgba(255,255,255,0.22)',
+                  'rgba(0,0,0,0)',
+                ] as unknown as string,
+                'fill-opacity': 1,
+              }}
+            />
+            {/* District border lines */}
+            <Layer
+              id="district-line-prov"
+              type="line"
+              minzoom={4}
+              filter={['==', ['get', 'province_spaced'], scope.province_name ?? '']}
+              paint={{
+                'line-color': scope?.level === 'district' && scope.district_slug
+                  ? [
+                      'case',
+                      ['==', ['get', 'district_slug'], scope.district_slug], '#67a6ff',
+                      'rgba(255,255,255,0.55)',
+                    ] as unknown as string
+                  : 'rgba(255,255,255,0.55)',
+                'line-width': [
+                  'interpolate', ['linear'], ['zoom'],
+                  4, scope?.level === 'district' ? 2 : 1,
+                  10, scope?.level === 'district' ? 3.5 : 2,
+                ] as unknown as number,
+                'line-dasharray': scope?.level === 'district' ? [1, 0] as [number, number] : [3, 2] as [number, number],
+              }}
+            />
+            {/* Selected district glow */}
+            {scope?.level === 'district' && scope.district_slug && (
+              <Layer
+                id="district-selected-glow"
+                type="line"
+                filter={['==', ['get', 'district_slug'], scope.district_slug]}
+                paint={{
+                  'line-color': '#67a6ff',
+                  'line-width': 5,
+                  'line-opacity': 0.4,
+                  'line-blur': 3,
+                }}
+              />
+            )}
+            {/* District name labels */}
+            <Layer
+              id="district-label"
+              type="symbol"
+              minzoom={8}
+              filter={['==', ['get', 'province_spaced'], scope.province_name ?? '']}
+              layout={{
+                'text-field': ['get', 'name_spaced'],
+                'text-size': ['interpolate', ['linear'], ['zoom'], 8, 10, 11, 13] as unknown as number,
+                'text-font': ['Noto Sans Thai Regular', 'Open Sans Regular', 'Arial Unicode MS Regular'],
+                'text-anchor': 'center',
+                'text-allow-overlap': false,
+              }}
+              paint={{
+                'text-color': '#ffffff',
+                'text-halo-color': 'rgba(0,0,0,0.7)',
+                'text-halo-width': 1.5,
+                'text-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0, 9, 1] as unknown as number,
+              }}
+            />
+          </Source>
+        )}
+
+        {/* ── Vector tile layer — national/region only (province uses DOM markers) ── */}
+        {mapZoom < 12 && !scope?.province_slug && (
           <Source
             id="stations-mvt"
             type="vector"
@@ -759,29 +974,125 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
             minzoom={0}
             maxzoom={14}
           >
-            {/* Brand logo symbols
-                zoom < 7  → show ~30% (id % 10 < 3) to avoid national-view clutter
-                zoom ≥ 7  → show all with collision detection                      */}
+            {/* ── Layer 1: Outer pulse ring (all stations) — slow pulse ── */}
+            <Layer
+              id="mvt-dots-outer"
+              type="circle"
+              source-layer="stations"
+              maxzoom={9}
+              filter={scope?.province_slug
+                ? ['==', ['get', 'province_slug'], scope.province_slug] as unknown as boolean
+                : ['case',
+                    ['>=', ['zoom'], 7], true,
+                    ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
+                    false,
+                  ] as unknown as boolean
+              }
+              paint={{
+                'circle-radius': ['interpolate', ['linear'], ['zoom'],
+                  ...(scope?.province_slug ? [5, 9, 8, 16] : [5, 7, 7, 10, 8, 14])
+                ] as unknown as number,
+                'circle-color': [
+                  'match', ['get', 'status'],
+                  'ok', 'rgba(105,240,174,0.15)',
+                  'high', 'rgba(105,240,174,0.15)',
+                  'low', 'rgba(255,209,102,0.2)',
+                  'out', 'rgba(255,107,107,0.25)',
+                  'refilling', 'rgba(65,214,232,0.15)',
+                  'rgba(136,136,136,0.08)',
+                ] as unknown as string,
+                'circle-opacity': pulseOuter,
+                'circle-blur': 0.8,
+              }}
+            />
+
+            {/* ── Layer 2: Inner glow ring — faster pulse ── */}
+            <Layer
+              id="mvt-dots-glow"
+              type="circle"
+              source-layer="stations"
+              maxzoom={9}
+              filter={scope?.province_slug
+                ? ['==', ['get', 'province_slug'], scope.province_slug] as unknown as boolean
+                : ['case',
+                    ['>=', ['zoom'], 7], true,
+                    ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
+                    false,
+                  ] as unknown as boolean
+              }
+              paint={{
+                'circle-radius': ['interpolate', ['linear'], ['zoom'],
+                  ...(scope?.province_slug ? [5, 6, 8, 11] : [5, 5, 7, 7, 8, 10])
+                ] as unknown as number,
+                'circle-color': [
+                  'match', ['get', 'status'],
+                  'ok', 'rgba(105,240,174,0.2)',
+                  'high', 'rgba(105,240,174,0.2)',
+                  'low', 'rgba(255,209,102,0.3)',
+                  'out', 'rgba(255,107,107,0.35)',
+                  'refilling', 'rgba(65,214,232,0.22)',
+                  'rgba(136,136,136,0.1)',
+                ] as unknown as string,
+                'circle-opacity': pulseInner,
+                'circle-blur': 0.4,
+              }}
+            />
+
+            {/* ── Layer 3: Core dot — solid with dark stroke ring ── */}
+            <Layer
+              id="mvt-dots"
+              type="circle"
+              source-layer="stations"
+              maxzoom={9}
+              filter={scope?.province_slug
+                ? ['==', ['get', 'province_slug'], scope.province_slug] as unknown as boolean
+                : ['case',
+                    ['>=', ['zoom'], 7], true,
+                    ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
+                    false,
+                  ] as unknown as boolean
+              }
+              paint={{
+                'circle-radius': ['interpolate', ['linear'], ['zoom'],
+                  ...(scope?.province_slug ? [5, 3.5, 8, 6] : [5, 2.5, 7, 3.5, 8, 5])
+                ] as unknown as number,
+                'circle-color': [
+                  'match', ['get', 'status'],
+                  'ok', '#69f0ae',
+                  'high', '#69f0ae',
+                  'low', '#ffd166',
+                  'out', '#ff6b6b',
+                  'refilling', '#41d6e8',
+                  '#888888',
+                ] as unknown as string,
+                'circle-opacity': 0.95,
+                'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 5, 1.5, 8, 2.5] as unknown as number,
+                'circle-stroke-color': 'rgba(13,17,23,0.7)',
+              }}
+            />
+
+            {/* Brand logo symbols at mid zoom (detail view) */}
             <Layer
               id="mvt-logos"
               type="symbol"
               source-layer="stations"
-              minzoom={5}
-              filter={['case',
-                ['>=', ['zoom'], 7], true,
-                ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
-                false,
-              ]}
+              minzoom={9}
+              filter={scope?.province_slug
+                ? ['==', ['get', 'province_slug'], scope.province_slug] as unknown as boolean
+                : true as unknown as boolean
+              }
               layout={{
                 'icon-image': ['concat', 'brand-', ['get', 'brand'], '-', ['get', 'status']],
-                'icon-size': ['interpolate', ['linear'], ['zoom'], 5, 0.38, 7, 0.48, 9, 0.58, 11, 0.72],
+                'icon-size': ['interpolate', ['linear'], ['zoom'],
+                  ...(scope?.province_slug ? [9, 0.55, 11, 0.78] : [9, 0.48, 11, 0.72])
+                ] as unknown as number,
                 'icon-anchor': 'bottom',
                 'icon-allow-overlap': false,
                 'icon-ignore-placement': false,
                 'icon-padding': 4,
               }}
               paint={{
-                'icon-opacity': ['interpolate', ['linear'], ['zoom'], 5, 0.82, 7, 0.92, 8, 1],
+                'icon-opacity': ['interpolate', ['linear'], ['zoom'], 9, 0.85, 10, 1],
               }}
             />
           </Source>
@@ -797,33 +1108,81 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
           </Marker>
         )}
 
+        {/* Floating card overlay — renders at any zoom whenever a station is selected */}
+        {popupStation && (() => {
+          const worst = getWorstFuelStatus(popupStation);
+          const tone = STATUS_TONE[worst];
+          const showFallback = logoFailures[popupStation.id];
+          const logoSrc = getBrandLogoUrl(popupStation.brand);
+          return (
+            <Marker key={`popup-card-${popupStation.id}`} longitude={popupStation.lng} latitude={popupStation.lat} anchor="bottom">
+              <button
+                type="button"
+                className="map-station-card"
+                style={{ '--marker-color': tone.color, '--marker-glow': tone.glow } as React.CSSProperties}
+                onClick={(e) => { e.stopPropagation(); setPopupStation(null); setRouteLine(null); setRouteInfo(null); }}
+                aria-label={`สถานี ${popupStation.name}`}
+              >
+                <div className="map-station-card-head">
+                  <div className="map-station-card-logo-wrap">
+                    {!showFallback ? (
+                      <Image src={logoSrc || '/brands/fallback.svg'} alt={popupStation.brand} width={20} height={20} unoptimized
+                        onError={() => setLogoFailures((c) => ({ ...c, [popupStation.id]: true }))} />
+                    ) : (
+                      <span className="map-station-card-fallback">{(popupStation.brand_key || popupStation.brand).slice(0, 2).toUpperCase()}</span>
+                    )}
+                  </div>
+                  <span className="map-station-card-name">{popupStation.name.length > 14 ? popupStation.name.slice(0, 14) + '…' : popupStation.name}</span>
+                  <span className={`map-station-card-status-icon sc-${worst}`} />
+                </div>
+                <div className="map-station-card-fuels">
+                  {popupStation.fuels.slice(0, 4).map((f, fi) => {
+                    const fm = getFuelMeta(f.fuel_type);
+                    return (
+                      <span key={fi} className={`map-fuel-badge fb-${f.status}`}
+                        style={{ '--fuel-color': fm.color } as React.CSSProperties}>
+                        {fm.abbr}
+                      </span>
+                    );
+                  })}
+                </div>
+              </button>
+            </Marker>
+          );
+        })()}
+
         {/* Station markers — only rendered when zoomed in enough (tiles handle zoom < 12) */}
-        {mapZoom >= 12 && displayedStations.map((station, index) => {
+        {/* DOM markers — province/district: all zooms (sampled), national: zoom >= 12 */}
+        {(scope?.province_slug ? true : mapZoom >= 12) && displayedStations.map((station, index) => {
+          if (popupStation?.id === station.id) return null;
+
+          // Province scope: sample stations at low zoom to reduce clutter
+          if (scope?.province_slug && mapZoom < 10) {
+            // zoom < 7: show 25%, zoom 7-8: show 50%, zoom 9: show 75%
+            const sample = mapZoom < 7 ? 4 : mapZoom < 9 ? 2 : 1.3;
+            if (station.id % Math.ceil(sample) !== 0) return null;
+          }
+
           const worst = getWorstFuelStatus(station);
           const tone = STATUS_TONE[worst];
           const showFallback = logoFailures[station.id];
           const logoSrc = getBrandLogoUrl(station.brand);
-          // Show full detail card only when zoomed in close enough to the station
           const isCard = mapZoom >= 15;
-          const isSmall = !isCard && !scope?.province_slug && mapZoom < 9;
+          // xs at zoom < 8, sm at zoom 8-10, normal at zoom >= 10
+          const isXs = scope?.province_slug && mapZoom < 8;
+          const isSmall = scope?.province_slug ? mapZoom < 10 : false;
 
           return (
             <Marker key={`${station.id}-${index}`} longitude={station.lng} latitude={station.lat} anchor="bottom">
               <button
                 type="button"
-                className={isCard ? 'map-station-card' : `map-station-marker${isSmall ? ' map-station-marker--sm' : ''}`}
+                className={isCard ? 'map-station-card' : `map-station-marker${isXs ? ' map-station-marker--xs' : isSmall ? ' map-station-marker--sm' : ''}`}
                 style={{ '--marker-color': tone.color, '--marker-glow': tone.glow } as React.CSSProperties}
                 onClick={(e) => {
                   e.stopPropagation();
-                  const next = popupStation?.id === station.id ? null : station;
-                  setPopupStation(next);
-                  if (next) {
-                    mapRef.current?.flyTo({ center: [station.lng, station.lat], zoom: 15, duration: 700 });
-                    void fetchRoute(next);
-                  } else {
-                    setRouteLine(null);
-                    setRouteInfo(null);
-                  }
+                  setPopupStation(station);
+                  mapRef.current?.flyTo({ center: [station.lng, station.lat], duration: 500 });
+                  void fetchRoute(station);
                   onSelectStation?.(station);
                 }}
                 aria-label={`สถานี ${station.name}`}
@@ -985,29 +1344,74 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
         );
       })()}
 
-      {/* ── Region selector overlay ── */}
-      <div className="map-region-bar">
-        <button
-          type="button"
-          className={`map-region-chip ${!selectedRegion ? 'active' : ''}`}
-          onClick={() => setSelectedRegion(null)}
-          style={{ '--chip-color': '#67a6ff' } as React.CSSProperties}
-        >
-          ทั้งประเทศ
-        </button>
-        {REGION_ORDER.map((key) => (
+      {/* ── Region selector overlay — hidden at province/district scope ── */}
+      {(!scope || scope.level === 'national' || scope.level === 'region') && (
+        <div className="map-region-bar">
           <button
-            key={key}
             type="button"
-            className={`map-region-chip ${selectedRegion === key ? 'active' : ''}`}
-            style={{ '--chip-color': REGION_META[key].color } as React.CSSProperties}
-            onClick={() => handleRegionClick(key)}
+            className={`map-region-chip ${!selectedRegion ? 'active' : ''}`}
+            onClick={() => setSelectedRegion(null)}
+            style={{ '--chip-color': '#67a6ff' } as React.CSSProperties}
           >
-            <span className="map-region-dot" style={{ background: REGION_META[key].color }} />
-            {REGION_META[key].label}
+            ทั้งประเทศ
           </button>
-        ))}
-      </div>
+          {REGION_ORDER.map((key) => (
+            <button
+              key={key}
+              type="button"
+              className={`map-region-chip ${selectedRegion === key ? 'active' : ''}`}
+              style={{ '--chip-color': REGION_META[key].color } as React.CSSProperties}
+              onClick={() => handleRegionClick(key)}
+            >
+              <span className="map-region-dot" style={{ background: REGION_META[key].color }} />
+              {REGION_META[key].label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Province scope breadcrumb bar ── */}
+      {scope && (scope.level === 'province' || scope.level === 'district') && (
+        <div className="map-region-bar">
+          <button
+            type="button"
+            className="map-region-chip"
+            style={{ '--chip-color': '#67a6ff' } as React.CSSProperties}
+            onClick={() => router.push('/')}
+          >
+            🇹🇭 ทั้งประเทศ
+          </button>
+          {scope.level === 'district' && scope.province_slug && (
+            <button
+              type="button"
+              className="map-region-chip"
+              style={{ '--chip-color': '#ffd166' } as React.CSSProperties}
+              onClick={() => router.push(`/province/${scope.province_slug}`)}
+            >
+              <span className="map-region-dot" style={{ background: '#ffd166' }} />
+              {scope.province_name ?? scope.province_slug}
+            </button>
+          )}
+          {scope.level === 'province' && (
+            <span
+              className="map-region-chip active"
+              style={{ '--chip-color': '#7ed321' } as React.CSSProperties}
+            >
+              <span className="map-region-dot" style={{ background: '#7ed321' }} />
+              {scope.province_name ?? scope.province_slug}
+            </span>
+          )}
+          {scope.level === 'district' && (
+            <span
+              className="map-region-chip active"
+              style={{ '--chip-color': '#7ed321' } as React.CSSProperties}
+            >
+              <span className="map-region-dot" style={{ background: '#7ed321' }} />
+              {scope.district_name ?? scope.district_slug}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* ── Hover province tooltip ── */}
       {hoveredProvince && (
@@ -1017,11 +1421,23 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, se
         </div>
       )}
 
+      {/* ── Hover district tooltip ── */}
+      {hoveredDistrict && (
+        <div className="map-province-tooltip">
+          อำเภอ {hoveredDistrict}
+          <span className="map-province-tooltip-hint">คลิกเพื่อดูภาพรวมอำเภอ</span>
+        </div>
+      )}
+
       {/* ── HUD ── */}
       <div className="map-shell-hud">
         <div className="map-shell-hud-chip">
           <span className="map-shell-hud-dot" />
-          {selectedRegion ? REGION_META[selectedRegion].label : 'แผนที่ประเทศไทย'}
+          {scope?.level === 'province'
+            ? `จังหวัด ${scope.province_name ?? ''}`
+            : scope?.level === 'district'
+            ? `อำเภอ ${scope.district_name ?? ''}`
+            : selectedRegion ? REGION_META[selectedRegion].label : 'แผนที่ประเทศไทย'}
         </div>
         <div className="map-shell-hud-chip map-shell-hud-chip--ghost">{displayedStations.length.toLocaleString()} สถานี</div>
       </div>
