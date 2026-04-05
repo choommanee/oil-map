@@ -644,7 +644,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
         style={{ width: '100%', height: '100%' }}
         interactiveLayerIds={[
           ...(!scope?.province_slug && mapZoom >= 7 && mapZoom < 9 ? ['mvt-dots'] : []),
-          ...(!scope?.province_slug && mapZoom >= 9 && mapZoom < 12 ? ['mvt-logos'] : []),
+          ...(!scope?.province_slug && mapZoom >= 9 ? ['mvt-logos'] : []),
           ...(scope?.level !== 'province' && scope?.level !== 'district' ? ['province-fill'] : []),
           ...(scope?.level === 'province' && mapZoom >= 7 ? ['district-fill'] : []),
         ]}
@@ -965,8 +965,8 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
           </Source>
         )}
 
-        {/* ── Vector tile layer — national/region only (province uses DOM markers) ── */}
-        {mapZoom < 12 && !scope?.province_slug && (
+        {/* ── Vector tile layer — national/region scope (always on, DOM markers overlay at zoom >= 12) ── */}
+        {!scope?.province_slug && (
           <Source
             id="stations-mvt"
             type="vector"
