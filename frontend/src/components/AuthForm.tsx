@@ -45,7 +45,9 @@ export default function AuthForm({ mode }: AuthFormProps) {
       const role = result.user.role;
       if (role === 'admin') {
         router.push('/admin');
-      } else if (role === 'province_manager') {
+      } else if (role === 'official') {
+        router.push('/official');
+      } else if (role === 'manager') {
         router.push('/manager');
       } else if (result.user.station_id) {
         router.push('/staff/my-station');
@@ -143,8 +145,10 @@ export default function AuthForm({ mode }: AuthFormProps) {
           <div className="auth-demo-grid">
             {[
               { label: 'ผู้ดูแลระบบ', email: 'admin@oilmap.demo', role: 'admin', color: '#ff6b6b' },
-              { label: 'ผจก. ขอนแก่น', email: 'manager@khonkaen.demo', role: 'province', color: '#ffd166' },
-              { label: 'ผจก. เลย', email: 'manager@loei.demo', role: 'province', color: '#ffd166' },
+              { label: 'พลังงาน จ.ขอนแก่น', email: 'manager@khonkaen.demo', role: 'official', color: '#67a6ff' },
+              { label: 'พลังงาน จ.เลย', email: 'manager@loei.demo', role: 'official', color: '#67a6ff' },
+              { label: 'เจ้าของปั้ม PTT', email: 'owner@ptt-khonkaen.demo', role: 'manager', color: '#ffd166' },
+              { label: 'เจ้าของปั้ม บางจาก', email: 'owner@bangchak-loei.demo', role: 'manager', color: '#ffd166' },
               { label: 'จนท. กรุงเทพ', email: 'staff@ptt-vibhavadi.demo', role: 'staff', color: '#69f0ae' },
               { label: 'จนท. ขอนแก่น', email: 'staff@khonkaen.demo', role: 'staff', color: '#69f0ae' },
               { label: 'จนท. เลย', email: 'staff@loei.demo', role: 'staff', color: '#69f0ae' },

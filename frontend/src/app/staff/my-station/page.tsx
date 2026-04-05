@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
-import { LogOut, Map, Pencil, RefreshCw } from 'lucide-react';
+import { LogOut, Map, Pencil, RefreshCw, MapPin, Clock } from 'lucide-react';
 import { getAuthUser, logout } from '@/lib/auth';
 import { getStation } from '@/lib/api';
 import { getBrandLogoUrl } from '@/lib/brandLogos';
@@ -63,6 +63,14 @@ function levelToBarClass(level: FuelLevel): string {
   }
 }
 
+function formatLastUpdated(dateStr: string): string {
+  const d = new Date(dateStr);
+  return d.toLocaleString('th-TH', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }) + ' น.';
+}
+
 export default function MyStationPage() {
   const router = useRouter();
   const [station, setStation] = useState<Station | null>(null);
@@ -117,58 +125,58 @@ export default function MyStationPage() {
         {/* Header */}
         <header className="mys-header">
           <div className="mys-header-left">
-            <h1 className="mys-page-title">สถานีของฉัน</h1>
-            <span className="mys-user-badge">{userName}</span>
+            <span className="mys-user-greeting">สวัสดี, {userName}</span>
           </div>
           <div className="mys-header-right">
             <Link href="/" className="mys-header-link">
-              <Map size={14} />
+              <Map size={15} />
               <span>แผนที่</span>
             </Link>
             <button onClick={handleLogout} className="mys-header-link mys-logout-btn">
-              <LogOut size={14} />
-              <span>ออกจากระบบ</span>
+              <LogOut size={15} />
+              <span>ออก</span>
             </button>
           </div>
         </header>
 
-        {/* Station card */}
+        {/* Station Status Card */}
         <section className="mys-station-card">
           <div className="mys-station-logo">
             <Image
               src={getBrandLogoUrl(station.brand_key)}
               alt={station.brand}
-              width={56}
-              height={56}
+              width={48}
+              height={48}
               style={{ objectFit: 'contain' }}
             />
           </div>
-          <div className="mys-station-info">
-            <h2 className="mys-station-name">{station.name}</h2>
-            <p className="mys-station-addr">{station.address}</p>
-            <p className="mys-station-location">
-              {station.district_name}, {station.province_name}
+          <h2 className="mys-station-name">{station.name}</h2>
+          <p className="mys-station-location">
+            <MapPin size={13} />
+            <span>{station.district_name} &middot; {station.province_name}</span>
+          </p>
+          <span className={`mys-overall-badge ${STATUS_CLASS[station.status] ?? 'mys-badge-ok'}`}>
+            {STATUS_LABEL[station.status] ?? station.status}
+          </span>
+          {station.last_updated && (
+            <p className="mys-last-updated">
+              <Clock size={12} />
+              <span>อัปเดตล่าสุด: {formatLastUpdated(station.last_updated)}</span>
             </p>
-          </div>
-          <div className="mys-station-status-wrap">
-            <span className={`mys-overall-badge ${STATUS_CLASS[station.status] ?? 'mys-badge-ok'}`}>
-              {STATUS_LABEL[station.status] ?? station.status}
-            </span>
-          </div>
+          )}
         </section>
 
-        {/* Fuel status grid */}
+        {/* Fuel Cards */}
         <section className="mys-section">
           <h3 className="mys-section-title">สถานะเชื้อเพลิง</h3>
-          <div className="mys-fuel-grid">
+          <div className="mys-fuel-stack">
             {station.fuels.map((fuel: FuelStatusItem) => {
               const color = FUEL_COLORS[fuel.fuel_type] ?? '#67a6ff';
               const pct = levelToPercent(fuel.status);
               const barClass = levelToBarClass(fuel.status);
               return (
-                <div key={fuel.fuel_type} className="mys-fuel-card">
+                <div key={fuel.fuel_type} className="mys-fuel-card" style={{ borderLeftColor: color }}>
                   <div className="mys-fuel-card-head">
-                    <span className="mys-fuel-dot" style={{ background: color }} />
                     <span className="mys-fuel-name">
                       {FUEL_LABELS[fuel.fuel_type] ?? fuel.fuel_type}
                     </span>
@@ -184,7 +192,7 @@ export default function MyStationPage() {
                       {fuel.liters.toLocaleString('th-TH')} ลิตร
                     </span>
                     <span className="mys-fuel-price">
-                      {fuel.price_per_liter.toFixed(2)} บาท/ล.
+                      ฿{fuel.price_per_liter.toFixed(2)}/ล.
                     </span>
                   </div>
                 </div>
@@ -193,14 +201,18 @@ export default function MyStationPage() {
           </div>
         </section>
 
-        {/* Quick update button */}
-        <section className="mys-section mys-update-section">
+        {/* Action Buttons */}
+        <section className="mys-actions">
           <Link
             href={`/staff/update?station_id=${stationId}&name=${encodeURIComponent(station.name)}`}
-            className="mys-update-btn"
+            className="mys-btn-primary"
           >
-            <Pencil size={16} />
+            <Pencil size={18} />
             <span>อัปเดตสถานะน้ำมัน</span>
+          </Link>
+          <Link href="/" className="mys-btn-secondary">
+            <Map size={18} />
+            <span>ดูบนแผนที่</span>
           </Link>
         </section>
 

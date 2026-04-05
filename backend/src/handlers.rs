@@ -765,7 +765,7 @@ pub async fn update_fuel_status(
     // Scope enforcement
     let allowed = match claims.role.as_str() {
         "admin" => true,
-        "province_manager" => {
+        "official" | "province_manager" | "manager" => {
             let station_province = sqlx::query_scalar::<_, String>(
                 "SELECT p.slug FROM stations s \
                  JOIN districts d ON s.district_id = d.id \

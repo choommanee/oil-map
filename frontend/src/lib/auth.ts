@@ -2,7 +2,7 @@ export interface AuthUser {
   id: number;
   name: string;
   email: string;
-  role: 'staff' | 'province_manager' | 'admin';
+  role: 'staff' | 'manager' | 'official' | 'province_manager' | 'admin';
   station_id?: number;
   province_slug?: string;
 }
