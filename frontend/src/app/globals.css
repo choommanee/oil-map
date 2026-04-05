@@ -6959,29 +6959,58 @@ html body>div:first-child {
 
 /* ── TrendChart ──────────────────────────────────────────────────────────────── */
 .tc-panel { display: flex; flex-direction: column; gap: 0; }
-.tc-body { padding: 8px 14px 10px; }
+.tc-body { padding: 10px 14px 12px; }
 .tc-loading,
 .tc-error,
 .tc-empty { font-size: 0.78rem; color: var(--text-soft); padding: 8px 0; }
 .tc-error { color: #ff6b6b; }
-.tc-chart { display: flex; flex-direction: column; gap: 6px; }
-.tc-row { display: flex; align-items: center; gap: 10px; }
-.tc-date {
-  width: 52px; flex-shrink: 0;
-  font-size: 0.7rem; color: var(--text-dim);
-  font-variant-numeric: tabular-nums; text-align: right;
+
+/* Trend badge in header */
+.tc-trend-badge {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 0.65rem; font-weight: 700; padding: 2px 8px;
+  border-radius: 10px;
 }
-.tc-bar-wrap { flex: 1; height: 12px; border-radius: 3px; overflow: hidden; background: rgba(255, 255, 255, 0.04); }
-.tc-bar { width: 100%; height: 100%; display: block; }
+.tc-trend-up { background: rgba(255,107,107,0.15); color: #ff6b6b; }
+.tc-trend-down { background: rgba(105,240,174,0.15); color: #69f0ae; }
+.tc-trend-flat { background: rgba(255,255,255,0.06); color: var(--text-dim); }
+
+/* Summary cards */
+.tc-summary {
+  display: flex; gap: 8px; margin-bottom: 12px;
+}
+.tc-sum-card {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 8px 4px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+}
+.tc-sum-num { font-size: 1.3rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tc-sum-label { font-size: 0.62rem; color: var(--text-dim); font-weight: 500; }
+.tc-sum-ok .tc-sum-num { color: #69f0ae; }
+.tc-sum-low .tc-sum-num { color: #ffd166; }
+.tc-sum-out .tc-sum-num { color: #ff6b6b; }
+
+/* Line chart */
+.tc-chart-wrap {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 8px; padding: 8px 4px 2px;
+}
+.tc-line-chart { width: 100%; height: auto; display: block; }
+.tc-axis-label { font-size: 7px; fill: rgba(255,255,255,0.35); font-family: inherit; }
+
+/* Legend */
 .tc-legend {
-  display: flex; gap: 12px; padding-top: 8px;
-  border-top: 1px solid var(--line); margin-top: 4px;
+  display: flex; gap: 14px; padding-top: 8px; justify-content: center;
 }
 .tc-legend-item {
-  display: flex; align-items: center; gap: 4px;
+  display: flex; align-items: center; gap: 5px;
   font-size: 0.68rem; color: var(--text-dim);
 }
-.tc-legend-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.tc-legend-line {
+  width: 14px; height: 3px; border-radius: 2px; flex-shrink: 0;
+}
 
 /* ── StationQuickEdit ────────────────────────────────────────────────────────── */
 .sqe-overlay {
