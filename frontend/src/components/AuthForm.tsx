@@ -133,11 +133,30 @@ export default function AuthForm({ mode }: AuthFormProps) {
       </button>
 
       {mode === 'login' && (
-        <div className="auth-demo-hint">
-          <span className="auth-demo-label">ทดสอบ:</span>
-          <code>staff@ptt-vibhavadi.demo</code>
-          <span>/</span>
-          <code>demo1234</code>
+        <div className="auth-demo-section">
+          <span className="auth-demo-title">บัญชีทดสอบ</span>
+          <div className="auth-demo-grid">
+            {[
+              { label: 'ผู้ดูแลระบบ', email: 'admin@oilmap.demo', role: 'admin', color: '#ff6b6b' },
+              { label: 'ผจก. ขอนแก่น', email: 'manager@khonkaen.demo', role: 'province', color: '#ffd166' },
+              { label: 'ผจก. เลย', email: 'manager@loei.demo', role: 'province', color: '#ffd166' },
+              { label: 'จนท. กรุงเทพ', email: 'staff@ptt-vibhavadi.demo', role: 'staff', color: '#69f0ae' },
+              { label: 'จนท. ขอนแก่น', email: 'staff@khonkaen.demo', role: 'staff', color: '#69f0ae' },
+              { label: 'จนท. เลย', email: 'staff@loei.demo', role: 'staff', color: '#69f0ae' },
+            ].map((d) => (
+              <button
+                key={d.email}
+                type="button"
+                className="auth-demo-btn"
+                onClick={() => { setEmail(d.email); setPassword('demo1234'); }}
+                style={{ '--demo-color': d.color } as React.CSSProperties}
+              >
+                <span className="auth-demo-dot" />
+                <span className="auth-demo-btn-label">{d.label}</span>
+                <span className="auth-demo-btn-role">{d.role}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </form>
