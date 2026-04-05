@@ -643,8 +643,8 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
         pitchWithRotate={false}
         style={{ width: '100%', height: '100%' }}
         interactiveLayerIds={[
-          ...(mapZoom >= 5 && mapZoom < 9 ? ['mvt-dots'] : []),
-          ...(mapZoom >= 9 && mapZoom < 12 ? ['mvt-logos'] : []),
+          ...(!scope?.province_slug && mapZoom >= 7 && mapZoom < 9 ? ['mvt-dots'] : []),
+          ...(!scope?.province_slug && mapZoom >= 9 && mapZoom < 12 ? ['mvt-logos'] : []),
           ...(scope?.level !== 'province' && scope?.level !== 'district' ? ['province-fill'] : []),
           ...(scope?.level === 'province' && mapZoom >= 7 ? ['district-fill'] : []),
         ]}
@@ -974,88 +974,48 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
             minzoom={0}
             maxzoom={14}
           >
-            {/* ── Layer 1: Outer pulse ring (all stations) — slow pulse ── */}
-            <Layer
-              id="mvt-dots-outer"
-              type="circle"
-              source-layer="stations"
-              maxzoom={9}
-              filter={scope?.province_slug
-                ? ['==', ['get', 'province_slug'], scope.province_slug] as unknown as boolean
-                : ['case',
-                    ['>=', ['zoom'], 7], true,
-                    ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
-                    false,
-                  ] as unknown as boolean
-              }
-              paint={{
-                'circle-radius': ['interpolate', ['linear'], ['zoom'],
-                  ...(scope?.province_slug ? [5, 9, 8, 16] : [5, 7, 7, 10, 8, 14])
-                ] as unknown as number,
-                'circle-color': [
-                  'match', ['get', 'status'],
-                  'ok', 'rgba(105,240,174,0.15)',
-                  'high', 'rgba(105,240,174,0.15)',
-                  'low', 'rgba(255,209,102,0.2)',
-                  'out', 'rgba(255,107,107,0.25)',
-                  'refilling', 'rgba(65,214,232,0.15)',
-                  'rgba(136,136,136,0.08)',
-                ] as unknown as string,
-                'circle-opacity': pulseOuter,
-                'circle-blur': 0.8,
-              }}
-            />
-
-            {/* ── Layer 2: Inner glow ring — faster pulse ── */}
+            {/* Glow ring — fade in from zoom 7, all visible at zoom 9 */}
             <Layer
               id="mvt-dots-glow"
               type="circle"
               source-layer="stations"
+              minzoom={7}
               maxzoom={9}
-              filter={scope?.province_slug
-                ? ['==', ['get', 'province_slug'], scope.province_slug] as unknown as boolean
-                : ['case',
-                    ['>=', ['zoom'], 7], true,
-                    ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
-                    false,
-                  ] as unknown as boolean
-              }
+              filter={['case',
+                ['>=', ['zoom'], 8], true,
+                ['<', ['%', ['to-number', ['get', 'id']], 10], 5], true,
+                false,
+              ] as unknown as boolean}
               paint={{
-                'circle-radius': ['interpolate', ['linear'], ['zoom'],
-                  ...(scope?.province_slug ? [5, 6, 8, 11] : [5, 5, 7, 7, 8, 10])
-                ] as unknown as number,
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 6, 8, 9, 9, 12] as unknown as number,
                 'circle-color': [
                   'match', ['get', 'status'],
-                  'ok', 'rgba(105,240,174,0.2)',
-                  'high', 'rgba(105,240,174,0.2)',
-                  'low', 'rgba(255,209,102,0.3)',
-                  'out', 'rgba(255,107,107,0.35)',
-                  'refilling', 'rgba(65,214,232,0.22)',
-                  'rgba(136,136,136,0.1)',
+                  'ok', 'rgba(105,240,174,0.15)',
+                  'high', 'rgba(105,240,174,0.15)',
+                  'low', 'rgba(255,209,102,0.22)',
+                  'out', 'rgba(255,107,107,0.28)',
+                  'refilling', 'rgba(65,214,232,0.15)',
+                  'rgba(136,136,136,0.08)',
                 ] as unknown as string,
-                'circle-opacity': pulseInner,
-                'circle-blur': 0.4,
+                'circle-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0, 7.5, pulseInner * 0.5, 8, pulseInner] as unknown as number,
+                'circle-blur': 0.6,
               }}
             />
 
-            {/* ── Layer 3: Core dot — solid with dark stroke ring ── */}
+            {/* Core dots — hidden at zoom < 7, fade in gradually */}
             <Layer
               id="mvt-dots"
               type="circle"
               source-layer="stations"
+              minzoom={7}
               maxzoom={9}
-              filter={scope?.province_slug
-                ? ['==', ['get', 'province_slug'], scope.province_slug] as unknown as boolean
-                : ['case',
-                    ['>=', ['zoom'], 7], true,
-                    ['<', ['%', ['to-number', ['get', 'id']], 10], 3], true,
-                    false,
-                  ] as unknown as boolean
-              }
+              filter={['case',
+                ['>=', ['zoom'], 8], true,
+                ['<', ['%', ['to-number', ['get', 'id']], 10], 5], true,
+                false,
+              ] as unknown as boolean}
               paint={{
-                'circle-radius': ['interpolate', ['linear'], ['zoom'],
-                  ...(scope?.province_slug ? [5, 3.5, 8, 6] : [5, 2.5, 7, 3.5, 8, 5])
-                ] as unknown as number,
+                'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 2, 8, 3.5, 9, 5] as unknown as number,
                 'circle-color': [
                   'match', ['get', 'status'],
                   'ok', '#69f0ae',
@@ -1065,9 +1025,9 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
                   'refilling', '#41d6e8',
                   '#888888',
                 ] as unknown as string,
-                'circle-opacity': 0.95,
-                'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 5, 1.5, 8, 2.5] as unknown as number,
-                'circle-stroke-color': 'rgba(13,17,23,0.7)',
+                'circle-opacity': ['interpolate', ['linear'], ['zoom'], 7, 0, 7.5, 0.4, 8, 0.7, 9, 0.95] as unknown as number,
+                'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 7, 0.5, 9, 2] as unknown as number,
+                'circle-stroke-color': 'rgba(13,17,23,0.6)',
               }}
             />
 
