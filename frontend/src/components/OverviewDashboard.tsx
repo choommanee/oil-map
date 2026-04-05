@@ -299,16 +299,15 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
   const [searchOrigin, setSearchOrigin] = useState<{ lat: number; lng: number; radiusKm: number } | null>(null);
   const [nearbyStations, setNearbyStations] = useState<NearbyStation[]>([]);
   const [activeTab, setActiveTab] = useState<SidebarTab>('summary');
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [clientReady, setClientReady] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Client-only init (avoid hydration mismatch)
+  // Client-only init
   useEffect(() => {
-    if (clientReady) return;
-    setClientReady(true);
     setAuthUser(getAuthUser());
-    if (window.innerWidth <= 768) setSidebarOpen(false);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Desktop: open sidebar by default
+    if (window.innerWidth > 768) setSidebarOpen(true);
+    // Trigger map resize after sidebar state settles
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 300);
   }, []);
 
   const feedLock = useRef(false);
