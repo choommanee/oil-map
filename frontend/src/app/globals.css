@@ -1588,7 +1588,12 @@ html body>div:first-child {
   z-index: 20;
 }
 .cmd-sidebar--open { width: 320px; }
-.cmd-sidebar--closed { width: 0; }
+.cmd-sidebar--closed {
+  width: 0;
+  border: none;
+  background: transparent;
+  pointer-events: none;
+}
 
 .cmd-sidebar-tabs {
   display: flex;
