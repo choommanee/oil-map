@@ -1045,7 +1045,7 @@ fn project(lat: f64, lon: f64, lat_min: f64, lat_max: f64, lon_min: f64, lon_max
 }
 
 /// Build a complete MVT binary from station rows
-fn build_mvt(rows: &[(i32, String, String, f64, f64)],
+fn build_mvt(rows: &[(i32, String, String, String, f64, f64)],
              lat_min: f64, lat_max: f64, lon_min: f64, lon_max: f64) -> Vec<u8> {
     // Shared value pool (string_value = proto field 1)
     let mut pool: Vec<Vec<u8>> = Vec::new();
@@ -1061,15 +1061,16 @@ fn build_mvt(rows: &[(i32, String, String, f64, f64)],
     };
 
     let mut features: Vec<Vec<u8>> = Vec::new();
-    for &(id, ref brand, ref status, lat, lon) in rows {
+    for &(id, ref brand, ref status, ref province_slug, lat, lon) in rows {
         let (tx, ty) = project(lat, lon, lat_min, lat_max, lon_min, lon_max);
         let id_s = id.to_string();
         let vi = intern(&mut pool, &mut pool_idx, &id_s);
         let vb = intern(&mut pool, &mut pool_idx, brand);
         let vs = intern(&mut pool, &mut pool_idx, status);
+        let vp = intern(&mut pool, &mut pool_idx, province_slug);
 
-        // tags: [key_idx, val_idx, ...]  keys: 0=id 1=brand 2=status
-        let tags = [0u32, vi, 1, vb, 2, vs];
+        // tags: [key_idx, val_idx, ...]  keys: 0=id 1=brand 2=status 3=province_slug
+        let tags = [0u32, vi, 1, vb, 2, vs, 3, vp];
         // POINT geometry: MoveTo(1) + zigzag(tx) + zigzag(ty)
         let geom = [9u32, mvt_zigzag(tx as i64) as u32, mvt_zigzag(ty as i64) as u32];
 
@@ -1085,7 +1086,7 @@ fn build_mvt(rows: &[(i32, String, String, f64, f64)],
     layer.extend(pb_u64(15, 2));                          // version = 2
     layer.extend(pb_bytes(1, b"stations"));               // name
     layer.extend(pb_u64(5, 4096));                        // extent
-    for key in &["id", "brand", "status"] {
+    for key in &["id", "brand", "status", "province_slug"] {
         layer.extend(pb_bytes(3, key.as_bytes()));        // keys
     }
     for v in &pool {
@@ -1105,7 +1106,7 @@ pub async fn get_station_tile(
 ) -> Response<Body> {
     let (lat_min, lat_max, lon_min, lon_max) = tile_to_bbox(z, x, y);
 
-    let rows = sqlx::query_as::<_, (i32, String, String, f64, f64)>(
+    let rows = sqlx::query_as::<_, (i32, String, String, String, f64, f64)>(
         r#"
         SELECT
             s.id,
@@ -1119,13 +1120,16 @@ pub async fn get_station_tile(
                 END,
                 'unknown'
             ) AS status,
+            p.slug AS province_slug,
             s.latitude,
             s.longitude
         FROM stations s
+        JOIN districts d ON s.district_id = d.id
+        JOIN provinces p ON d.province_id = p.id
         LEFT JOIN fuel_status fs ON fs.station_id = s.id
         WHERE s.latitude  BETWEEN $1 AND $2
           AND s.longitude BETWEEN $3 AND $4
-        GROUP BY s.id, s.brand, s.latitude, s.longitude
+        GROUP BY s.id, s.brand, s.latitude, s.longitude, p.slug
         "#,
     )
     .bind(lat_min)
