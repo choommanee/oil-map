@@ -394,6 +394,20 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
           <SituationBadge alertCount={alertCount} />
         </div>
 
+        {/* Fuel price ticker */}
+        <div className="cmd-price-ticker mobile-hidden">
+          {overview.fuel_mix.map((f) => {
+            const fm = getFuelMeta(f.fuel_type);
+            return (
+              <div key={f.fuel_type} className="cmd-price-item">
+                <span className="cmd-price-dot" style={{ background: fm.color }} />
+                <span className="cmd-price-name">{fm.abbr}</span>
+                <span className="cmd-price-val">฿{f.average_price.toFixed(2)}</span>
+              </div>
+            );
+          })}
+        </div>
+
         <div className="cmd-header-right mobile-hidden">
           <Link href="/nearby" className="cmd-header-link">
             <Navigation2 size={13} />
