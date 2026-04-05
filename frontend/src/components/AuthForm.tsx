@@ -41,9 +41,14 @@ export default function AuthForm({ mode }: AuthFormProps) {
       localStorage.setItem('auth_token', result.token);
       localStorage.setItem('auth_user', JSON.stringify(result.user));
 
-      // Redirect: staff with assigned station → straight to update; otherwise → station picker
-      if (result.user.station_id) {
-        router.push(`/staff/update?station_id=${result.user.station_id}`);
+      // Redirect by role
+      const role = result.user.role;
+      if (role === 'admin') {
+        router.push('/admin');
+      } else if (role === 'province_manager') {
+        router.push('/manager');
+      } else if (result.user.station_id) {
+        router.push('/staff/my-station');
       } else {
         router.push('/staff/update');
       }

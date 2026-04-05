@@ -794,6 +794,11 @@ export async function getTrends(provinceSlug?: string, days?: number): Promise<T
   return requestJson<TrendData>('/api/trends', undefined, query);
 }
 
+export async function getStation(stationId: number): Promise<Station> {
+  const raw = await requestJson<BackendStationSummary>(`/api/stations/${stationId}`);
+  return mapStation(raw);
+}
+
 export async function getStationHistory(stationId: number): Promise<StationHistoryData> {
   return requestJson<StationHistoryData>(`/api/stations/${stationId}/history`);
 }
