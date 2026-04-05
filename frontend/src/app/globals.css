@@ -3270,8 +3270,7 @@ html body>div:first-child {
     max-height: 35%;
   }
   .district-overlay-mini {
-    top: auto;
-    bottom: 80px;
+    top: 10px;
     right: 8px;
     font-size: 0.65rem;
     padding: 5px 10px;

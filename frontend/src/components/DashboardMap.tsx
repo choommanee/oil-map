@@ -966,7 +966,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
         )}
 
         {/* ── Vector tile layer — national/region scope (always on, DOM markers overlay at zoom >= 12) ── */}
-        {!scope?.province_slug && (
+        {mapLoaded && !scope?.province_slug && (
           <Source
             id="stations-mvt"
             type="vector"
