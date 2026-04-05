@@ -3196,19 +3196,28 @@ html body>div:first-child {
   /* Price ticker: hide on mobile to save space */
   .cmd-price-ticker { display: none; }
 
-  /* Sidebar: slide over map as overlay on mobile */
+  /* Sidebar: overlay on mobile, fully hidden when closed */
   .cmd-sidebar {
     position: absolute;
     top: 0;
     left: 0;
     bottom: 0;
     z-index: 30;
+  }
+  .cmd-sidebar--open {
+    width: min(300px, 85vw);
+    background: #0d1117;
+    border-right: 1px solid rgba(255,255,255,0.1);
     box-shadow: 4px 0 24px rgba(0,0,0,0.6);
   }
-  .cmd-sidebar--open { width: min(300px, 85vw); }
-  .cmd-sidebar--closed { width: 0; box-shadow: none; }
+  .cmd-sidebar--closed {
+    display: none !important;
+  }
 
-  .cmd-sidebar-toggle { left: 0; }
+  .cmd-sidebar-toggle {
+    left: 0;
+    z-index: 31;
+  }
   .cmd-sidebar--open ~ .cmd-sidebar-toggle { left: min(300px, 85vw); }
 
   .cmd-sidebar-panel { min-width: 0; }
