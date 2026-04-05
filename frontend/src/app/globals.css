@@ -2140,39 +2140,41 @@ html body>div:first-child {
 .cmd-price-ticker {
   display: flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px 6px;
+  gap: 1px;
+  padding: 2px 4px;
   border-radius: 8px;
-  background: rgba(255,255,255,0.03);
+  background: rgba(255,255,255,0.02);
   border: 1px solid rgba(255,255,255,0.06);
   overflow-x: auto;
   scrollbar-width: none;
-  flex-shrink: 1;
+  flex: 1;
   min-width: 0;
+  justify-content: center;
 }
 .cmd-price-ticker::-webkit-scrollbar { display: none; }
 .cmd-price-item {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
+  padding: 3px 7px;
   border-radius: 5px;
   white-space: nowrap;
   transition: background 0.15s;
+  border-right: 1px solid rgba(255,255,255,0.05);
 }
-.cmd-price-item:hover { background: rgba(255,255,255,0.05); }
-.cmd-price-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+.cmd-price-item:last-child { border-right: none; }
+.cmd-price-item:hover { background: rgba(255,255,255,0.06); }
+.cmd-price-flag {
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
   flex-shrink: 0;
 }
 .cmd-price-name {
-  font-size: 0.62rem;
-  font-weight: 600;
+  font-size: 0.6rem;
+  font-weight: 700;
   color: var(--text-3);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.02em;
 }
 .cmd-price-val {
   font-size: 0.72rem;
@@ -2180,6 +2182,7 @@ html body>div:first-child {
   color: var(--text-1);
   font-variant-numeric: tabular-nums;
 }
+.cmd-price-ref { color: var(--text-3); opacity: 0.5; }
 
 .cmd-header-link {
   display: flex;

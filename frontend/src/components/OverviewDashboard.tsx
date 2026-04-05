@@ -394,18 +394,36 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
           <SituationBadge alertCount={alertCount} />
         </div>
 
-        {/* Fuel price ticker */}
+        {/* Fuel price ticker — all types */}
         <div className="cmd-price-ticker mobile-hidden">
-          {overview.fuel_mix.map((f) => {
-            const fm = getFuelMeta(f.fuel_type);
-            return (
-              <div key={f.fuel_type} className="cmd-price-item">
-                <span className="cmd-price-dot" style={{ background: fm.color }} />
-                <span className="cmd-price-name">{fm.abbr}</span>
-                <span className="cmd-price-val">฿{f.average_price.toFixed(2)}</span>
-              </div>
-            );
-          })}
+          {(() => {
+            // Build price map from API data
+            const priceMap: Record<string, number> = {};
+            for (const f of overview.fuel_mix) priceMap[f.fuel_type] = f.average_price;
+            // All fuel types to display with reference prices as fallback
+            const allFuels = [
+              { key: 'diesel_b7', ref: 29.99 },
+              { key: 'premium_diesel', ref: 32.99 },
+              { key: 'gasohol_91', ref: 36.58 },
+              { key: 'gasohol_95', ref: 37.95 },
+              { key: 'e20', ref: 34.89 },
+              { key: 'E85', ref: 25.14 },
+              { key: 'NGV', ref: 17.59 },
+              { key: 'LPG', ref: 20.29 },
+            ];
+            return allFuels.map(({ key, ref }) => {
+              const fm = getFuelMeta(key);
+              const price = priceMap[key] ?? ref;
+              const delta = priceMap[key] ? null : true; // mark as ref if no real data
+              return (
+                <div key={key} className="cmd-price-item" title={fm.label}>
+                  <span className="cmd-price-flag" style={{ background: fm.color }} />
+                  <span className="cmd-price-name">{fm.abbr}</span>
+                  <span className={`cmd-price-val ${delta ? 'cmd-price-ref' : ''}`}>฿{price.toFixed(2)}</span>
+                </div>
+              );
+            });
+          })()}
         </div>
 
         <div className="cmd-header-right mobile-hidden">
