@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { AlertTriangle, ArrowLeft, CheckCircle, RefreshCw, Send } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CheckCircle, Home, RefreshCw, Send } from 'lucide-react';
 import { updateStationFuel } from '@/lib/api';
+import { getAuthUser } from '@/lib/auth';
 import type { FuelLevel } from '@/lib/types';
 
 const FUEL_TYPES: { key: string; label: string; color: string }[] = [
@@ -79,10 +80,26 @@ export default function FuelStatusEditor({ stationId, stationName }: FuelStatusE
       <div className="staff-editor-header">
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <Link href="/staff/update" className="staff-back-btn">
-              <ArrowLeft size={12} />
-              เปลี่ยนสถานี
-            </Link>
+            {(() => {
+              const u = getAuthUser();
+              const backHref = u?.role === 'admin' ? '/admin'
+                : u?.role === 'province_manager' ? '/manager'
+                : u?.station_id ? '/staff/my-station'
+                : '/staff/update';
+              const backLabel = u?.station_id ? 'กลับหน้าสถานี' : 'เปลี่ยนสถานี';
+              return (
+                <>
+                  <Link href={backHref} className="staff-back-btn">
+                    <ArrowLeft size={12} />
+                    {backLabel}
+                  </Link>
+                  <Link href="/" className="staff-back-btn">
+                    <Home size={12} />
+                    แผนที่
+                  </Link>
+                </>
+              );
+            })()}
           </div>
           <p className="staff-editor-kicker">อัปเดตสถานะน้ำมัน</p>
           <h2 className="staff-editor-title">

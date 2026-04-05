@@ -73,10 +73,9 @@ export default function MyStationPage() {
 
   useEffect(() => {
     const user = getAuthUser();
-    if (!user || user.role !== 'staff' || !user.station_id) {
-      router.replace('/login');
-      return;
-    }
+    if (!user) { router.replace('/auth/login'); return; }
+    if (user.role !== 'staff') { router.replace('/'); return; }
+    if (!user.station_id) { router.replace('/staff/update'); return; }
     setUserName(user.name);
     setStationId(user.station_id);
 
