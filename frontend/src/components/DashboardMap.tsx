@@ -175,9 +175,9 @@ const THAILAND_BOUNDS: LngLatBoundsLike = [
 
 const VALLARIS_API_KEY = process.env.NEXT_PUBLIC_VALLARIS_API_KEY ?? '';
 const VALLARIS_STYLE_ID = '69c3777e84500caebd3ecbd5';
-const MAP_STYLE = VALLARIS_API_KEY
-  ? `https://app.vallarismaps.com/core/api/styles/1.0-beta/styles/${VALLARIS_STYLE_ID}?api_key=${VALLARIS_API_KEY}`
-  : 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+const FALLBACK_MAP_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+const VALLARIS_MAP_STYLE = `https://app.vallarismaps.com/core/api/styles/1.0-beta/styles/${VALLARIS_STYLE_ID}?api_key=${VALLARIS_API_KEY}`;
+const INITIAL_MAP_STYLE = VALLARIS_API_KEY ? VALLARIS_MAP_STYLE : FALLBACK_MAP_STYLE;
 
 const EMPTY_BOUNDARY_SOURCE: BoundaryCollection = { type: 'FeatureCollection', features: [] };
 
@@ -263,6 +263,7 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
   const mapRef = useRef<MapRef | null>(null);
   const router = useRouter();
   const [mapLoaded, setMapLoaded] = useState(false);
+  const [mapStyle, setMapStyle] = useState<string>(INITIAL_MAP_STYLE);
   const [popupStation, setPopupStation] = useState<Station | null>(null);
   const [logoFailures, setLogoFailures] = useState<Record<number, boolean>>({});
   const [rawBoundaries, setRawBoundaries] = useState<BoundaryCollection>(EMPTY_BOUNDARY_SOURCE);
@@ -637,7 +638,14 @@ export default function DashboardMap({ stations = [], scope, onSelectStation, on
       <Map
         ref={mapRef}
         initialViewState={THAILAND_CENTER}
-        mapStyle={MAP_STYLE}
+        mapStyle={mapStyle}
+        onError={(e) => {
+          const msg = e?.error?.message ?? '';
+          if (mapStyle === VALLARIS_MAP_STYLE && /vallarismaps|401|Unauthorized/i.test(msg)) {
+            console.warn('[DashboardMap] Vallaris style failed, falling back to default basemap', msg);
+            setMapStyle(FALLBACK_MAP_STYLE);
+          }
+        }}
         attributionControl={false}
         dragRotate={false}
         pitchWithRotate={false}

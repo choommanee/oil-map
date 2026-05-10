@@ -454,7 +454,7 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
           <LiveClock />
           <div className="cmd-update-chip">
             <RefreshCw size={11} />
-            <span>{new Date(overview.generated_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</span>
+            <span suppressHydrationWarning>{new Date(overview.generated_at).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })} น.</span>
           </div>
           <button className="cmd-icon-btn" aria-label="notifications" type="button">
             <Bell size={15} />
@@ -471,14 +471,14 @@ export default function OverviewDashboard({ overview, map, feed }: OverviewDashb
               </div>
               <button
                 type="button"
-                onClick={() => { logout(); window.location.href = '/auth'; }}
+                onClick={() => { logout(); window.location.href = '/auth/login'; }}
                 title="ออกจากระบบ"
                 style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', padding: '0 2px', display: 'flex', alignItems: 'center' }}
               >✕</button>
             </div>
           ) : (
             <Link
-              href="/auth"
+              href="/auth/login"
               style={{ padding: '5px 14px', borderRadius: '8px', background: 'var(--accent)', color: '#fff', fontSize: '0.78rem', fontWeight: 600, textDecoration: 'none' }}
             >
               เข้าสู่ระบบ
